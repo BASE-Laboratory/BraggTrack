@@ -28,3 +28,6 @@ jobs:
 
       - name: Run Week 1 acceptance checks
         run: python scripts/check_acceptance.py
+
+      - name: Run Week 2 segmentation smoke test
+        run: python -m braggtrack.cli.segment_synthetic

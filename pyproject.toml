@@ -23,6 +23,8 @@ dependencies = [
 [project.scripts]
 braggtrack-inspect = "braggtrack.cli.inspect_datasets:main"
 braggtrack-validate = "braggtrack.cli.validate_dataset:main"
+braggtrack-segment-synthetic = "braggtrack.cli.segment_synthetic:main"
+braggtrack-segment-dataset = "braggtrack.cli.segment_dataset:main"
 
 [tool.setuptools.packages.find]
 include = ["braggtrack*"]

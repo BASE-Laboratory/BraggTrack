@@ -80,3 +80,25 @@ def extract_scan_metadata(path: str | Path) -> dict[str, Any]:
         }
 
     return metadata
+
+
+def load_primary_volume(path: str | Path, candidates: list[str] | None = None) -> list[list[list[float]]]:
+    """Load a primary 3D detector volume from common NeXus dataset paths."""
+
+    h5py = _require_h5py()
+    ds_candidates = candidates or [
+        "/entry/data/data",
+        "/entry1/data/data",
+        "/entry/instrument/detector/data",
+        "/entry1/instrument/detector/data",
+    ]
+
+    with h5py.File(path, "r") as handle:
+        for key in ds_candidates:
+            if key in handle:
+                data = handle[key][()]
+                if getattr(data, "ndim", None) != 3:
+                    raise ValueError(f"Dataset '{key}' exists but is not 3D (ndim={getattr(data, 'ndim', None)}).")
+                return data.tolist()
+
+    raise KeyError(f"No candidate 3D dataset found in file. Tried: {ds_candidates}")
