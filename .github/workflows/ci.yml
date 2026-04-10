@@ -28,3 +28,11 @@ jobs:
 
       - name: Run CI report (tests + acceptance + smoke)
         run: python scripts/ci_report.py
+      - name: Run unit tests
+        run: python -m unittest discover -s tests -v
+
+      - name: Run Week 1 acceptance checks
+        run: python scripts/check_acceptance.py
+
+      - name: Run Week 2 segmentation smoke test
+        run: python -m braggtrack.cli.segment_synthetic

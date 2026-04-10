@@ -1,6 +1,7 @@
 import unittest
 
 from braggtrack.segmentation import h_maxima_seeds, log_enhance_3d, segment_classical
+from braggtrack.segmentation import local_maxima_seeds, log_enhance_3d, segment_classical
 
 
 class ClassicalSegmentationTests(unittest.TestCase):
@@ -15,6 +16,10 @@ class ClassicalSegmentationTests(unittest.TestCase):
         volume = [[[0.0 for _ in range(5)] for _ in range(5)] for _ in range(5)]
         volume[2][2][2] = 10.0
         seeds = h_maxima_seeds(volume, min_value=5.0, h=0.1, min_separation=1)
+    def test_local_maxima_detects_peak(self) -> None:
+        volume = [[[0.0 for _ in range(5)] for _ in range(5)] for _ in range(5)]
+        volume[2][2][2] = 10.0
+        seeds = local_maxima_seeds(volume, min_value=5.0, min_separation=1)
         self.assertIn((2, 2, 2), seeds)
 
     def test_segment_classical_two_blobs(self) -> None:
@@ -23,6 +28,7 @@ class ClassicalSegmentationTests(unittest.TestCase):
         for z, y, x in [(2, 2, 2), (2, 2, 3), (7, 7, 7), (7, 7, 6)]:
             volume[z][y][x] = 25.0
         result = segment_classical(volume, threshold=0.01, blur_passes=1, h_value=0.0, min_seed_separation=1)
+        result = segment_classical(volume, threshold=1.2, blur_passes=1, min_seed_separation=1)
         self.assertGreaterEqual(result.seed_count, 2)
         self.assertGreaterEqual(result.component_count, 2)
 

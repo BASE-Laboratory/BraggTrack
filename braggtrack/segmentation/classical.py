@@ -1,4 +1,5 @@
 """Classical 3D segmentation building blocks for Week 2."""
+"""Classical 3D segmentation building blocks for Week 2.1."""
 
 from __future__ import annotations
 
@@ -112,6 +113,15 @@ def h_maxima_seeds(
 
     z_max, y_max, x_max = _shape(volume)
     candidates: list[tuple[int, int, int, float]] = []
+def local_maxima_seeds(
+    volume: list[list[list[float]]],
+    min_value: float,
+    min_separation: int = 1,
+) -> list[tuple[int, int, int]]:
+    """Find local maxima seeds above a minimum value."""
+
+    z_max, y_max, x_max = _shape(volume)
+    seeds: list[tuple[int, int, int, float]] = []
 
     for z in range(z_max):
         for y in range(y_max):
@@ -133,6 +143,9 @@ def h_maxima_seeds(
                                 break
                             if neighbor > max_neighbor:
                                 max_neighbor = neighbor
+                            if volume[nz][ny][nx] > center:
+                                is_max = False
+                                break
                         if not is_max:
                             break
                     if not is_max:
@@ -145,6 +158,13 @@ def h_maxima_seeds(
     picked: list[tuple[int, int, int]] = []
 
     for z, y, x, _ in candidates:
+                if is_max:
+                    seeds.append((z, y, x, center))
+
+    seeds.sort(key=lambda item: item[3], reverse=True)
+    picked: list[tuple[int, int, int]] = []
+
+    for z, y, x, _ in seeds:
         if all(abs(z - pz) > min_separation or abs(y - py) > min_separation or abs(x - px) > min_separation for pz, py, px in picked):
             picked.append((z, y, x))
 
@@ -173,6 +193,9 @@ def watershed_from_seeds(
             if not (0 <= nz < z_max and 0 <= ny < y_max and 0 <= nx < x_max):
                 continue
             if labels[nz][ny][nx] != 0 or response[nz][ny][nx] < threshold:
+            if labels[nz][ny][nx] != 0:
+                continue
+            if response[nz][ny][nx] < threshold:
                 continue
             labels[nz][ny][nx] = label_id
             queue.append((nz, ny, nx, label_id))
@@ -182,6 +205,8 @@ def watershed_from_seeds(
 
 def _count_labels(labels: list[list[list[int]]]) -> int:
     return len({v for plane in labels for row in plane for v in row if v > 0})
+    found = {v for plane in labels for row in plane for v in row if v > 0}
+    return len(found)
 
 
 def segment_classical(
@@ -200,6 +225,12 @@ def segment_classical(
         h=h_value,
         min_separation=min_seed_separation,
     )
+    min_seed_separation: int = 1,
+) -> ClassicalSegmentationResult:
+    """Run classical LoG + local maxima + seeded watershed pipeline."""
+
+    response = log_enhance_3d(volume, blur_passes=blur_passes)
+    seeds = local_maxima_seeds(response, min_value=threshold, min_separation=min_seed_separation)
     labels = watershed_from_seeds(response, seeds=seeds, threshold=threshold)
     return ClassicalSegmentationResult(
         threshold=threshold,
