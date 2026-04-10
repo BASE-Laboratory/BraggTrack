@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "braggtrack"
+version = "0.1.0"
+description = "Semantic 4D kinematics and fracture tracking for operando diffraction."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "BraggTrack contributors" }]
+dependencies = [
+  "numpy>=1.26",
+  "scipy>=1.12",
+  "scikit-image>=0.22",
+  "networkx>=3.2",
+  "torch>=2.2",
+  "transformers>=4.40",
+  "h5py>=3.10",
+]
+
+[project.scripts]
+braggtrack-inspect = "braggtrack.cli.inspect_datasets:main"
+braggtrack-validate = "braggtrack.cli.validate_dataset:main"
+braggtrack-segment-synthetic = "braggtrack.cli.segment_synthetic:main"
+braggtrack-segment-dataset = "braggtrack.cli.segment_dataset:main"
+
+[tool.setuptools.packages.find]
+include = ["braggtrack*"]
