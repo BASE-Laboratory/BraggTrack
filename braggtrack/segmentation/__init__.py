@@ -11,26 +11,23 @@ from .classical import (
 )
 from .features import extract_instance_table
 from .otsu import otsu_threshold
-from .pipeline import connected_components_3d, segment_volume
+from .pipeline import SegmentationResult, connected_components_3d, segment_volume
 from .postprocess import fill_holes_binary, relabel_sequential, remove_small_objects
-from .otsu import otsu_threshold
-from .pipeline import connected_components_3d, segment_volume
 
 __all__ = [
-    "otsu_threshold",
-    "segment_volume",
-    "connected_components_3d",
     "ClassicalSegmentationResult",
-    "gaussian_blur_3d",
-    "log_enhance_3d",
-    "h_maxima_seeds",
-    "watershed_from_seeds",
-    "segment_classical",
-    "remove_small_objects",
-    "fill_holes_binary",
-    "relabel_sequential",
+    "SegmentationResult",
+    "connected_components_3d",
     "extract_instance_table",
+    "fill_holes_binary",
+    "gaussian_blur_3d",
+    "h_maxima_seeds",
     "local_maxima_seeds",
-    "watershed_from_seeds",
+    "log_enhance_3d",
+    "otsu_threshold",
+    "relabel_sequential",
+    "remove_small_objects",
     "segment_classical",
+    "segment_volume",
+    "watershed_from_seeds",
 ]
