@@ -1,3 +1,4 @@
+"""Classical 3D segmentation building blocks for Week 2."""
 """Classical 3D segmentation building blocks for Week 2.1."""
 
 from __future__ import annotations
@@ -12,6 +13,7 @@ class ClassicalSegmentationResult:
     seed_count: int
     component_count: int
     labeled_volume: list[list[list[int]]]
+    response: list[list[list[float]]]
 
 
 def _shape(volume: list[list[list[float]]]) -> tuple[int, int, int]:
@@ -101,6 +103,16 @@ def log_enhance_3d(volume: list[list[list[float]]], blur_passes: int = 1) -> lis
     return [[[-v for v in row] for row in plane] for plane in lap]
 
 
+def h_maxima_seeds(
+    volume: list[list[list[float]]],
+    min_value: float,
+    h: float,
+    min_separation: int = 1,
+) -> list[tuple[int, int, int]]:
+    """Find h-maxima seeds above threshold with non-maximum suppression."""
+
+    z_max, y_max, x_max = _shape(volume)
+    candidates: list[tuple[int, int, int, float]] = []
 def local_maxima_seeds(
     volume: list[list[list[float]]],
     min_value: float,
@@ -118,12 +130,19 @@ def local_maxima_seeds(
                 if center < min_value:
                     continue
 
+                max_neighbor = -10**18
                 is_max = True
                 for nz in range(max(0, z - 1), min(z_max, z + 2)):
                     for ny in range(max(0, y - 1), min(y_max, y + 2)):
                         for nx in range(max(0, x - 1), min(x_max, x + 2)):
                             if (nz, ny, nx) == (z, y, x):
                                 continue
+                            neighbor = volume[nz][ny][nx]
+                            if neighbor > center:
+                                is_max = False
+                                break
+                            if neighbor > max_neighbor:
+                                max_neighbor = neighbor
                             if volume[nz][ny][nx] > center:
                                 is_max = False
                                 break
@@ -132,6 +151,13 @@ def local_maxima_seeds(
                     if not is_max:
                         break
 
+                if is_max and (center - max_neighbor) >= h:
+                    candidates.append((z, y, x, center))
+
+    candidates.sort(key=lambda item: item[3], reverse=True)
+    picked: list[tuple[int, int, int]] = []
+
+    for z, y, x, _ in candidates:
                 if is_max:
                     seeds.append((z, y, x, center))
 
@@ -166,6 +192,7 @@ def watershed_from_seeds(
         for nz, ny, nx in ((z - 1, y, x), (z + 1, y, x), (z, y - 1, x), (z, y + 1, x), (z, y, x - 1), (z, y, x + 1)):
             if not (0 <= nz < z_max and 0 <= ny < y_max and 0 <= nx < x_max):
                 continue
+            if labels[nz][ny][nx] != 0 or response[nz][ny][nx] < threshold:
             if labels[nz][ny][nx] != 0:
                 continue
             if response[nz][ny][nx] < threshold:
@@ -177,6 +204,7 @@ def watershed_from_seeds(
 
 
 def _count_labels(labels: list[list[list[int]]]) -> int:
+    return len({v for plane in labels for row in plane for v in row if v > 0})
     found = {v for plane in labels for row in plane for v in row if v > 0}
     return len(found)
 
@@ -185,6 +213,18 @@ def segment_classical(
     volume: list[list[list[float]]],
     threshold: float,
     blur_passes: int = 1,
+    h_value: float = 0.1,
+    min_seed_separation: int = 1,
+) -> ClassicalSegmentationResult:
+    """Run classical LoG + h-maxima + seeded watershed pipeline."""
+
+    response = log_enhance_3d(volume, blur_passes=blur_passes)
+    seeds = h_maxima_seeds(
+        response,
+        min_value=threshold,
+        h=h_value,
+        min_separation=min_seed_separation,
+    )
     min_seed_separation: int = 1,
 ) -> ClassicalSegmentationResult:
     """Run classical LoG + local maxima + seeded watershed pipeline."""
@@ -197,4 +237,5 @@ def segment_classical(
         seed_count=len(seeds),
         component_count=_count_labels(labels),
         labeled_volume=labels,
+        response=response,
     )
