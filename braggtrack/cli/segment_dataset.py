@@ -1,5 +1,4 @@
 """Run classical segmentation over discovered scan files and write artifacts."""
-"""Run classical segmentation over discovered scan files."""
 
 from __future__ import annotations
 
@@ -8,6 +7,8 @@ import csv
 import hashlib
 import json
 from pathlib import Path
+
+import numpy as np
 
 from braggtrack.io import MissingH5DependencyError, discover_operando_scans, load_primary_volume
 from braggtrack.segmentation import (
@@ -18,7 +19,6 @@ from braggtrack.segmentation import (
     remove_small_objects,
     segment_classical,
 )
-from braggtrack.segmentation import otsu_threshold, segment_classical
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -32,32 +32,23 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _synth_volume_from_file(path: Path, size: int = 24) -> list[list[list[float]]]:
+def _synth_volume_from_file(path: Path, size: int = 24) -> np.ndarray:
+    """Generate a deterministic synthetic volume with Gaussian blobs."""
     digest = hashlib.sha256(path.read_bytes()[:4096]).digest()
     seed_vals = [b for b in digest[:12]]
-    volume = [[[1.0 for _ in range(size)] for _ in range(size)] for _ in range(size)]
+    volume = np.ones((size, size, size), dtype=np.float64)
     centers = [
         (4 + seed_vals[0] % 8, 4 + seed_vals[1] % 8, 4 + seed_vals[2] % 8),
         (10 + seed_vals[3] % 8, 10 + seed_vals[4] % 8, 10 + seed_vals[5] % 8),
         (6 + seed_vals[6] % 10, 6 + seed_vals[7] % 10, 6 + seed_vals[8] % 10),
     ]
+    zz, yy, xx = np.mgrid[0:size, 0:size, 0:size]
     for cz, cy, cx in centers:
         amp = 10.0 + (seed_vals[(cz + cy + cx) % len(seed_vals)] % 20)
-        for z in range(size):
-            for y in range(size):
-                for x in range(size):
-                    d2 = (z - cz) ** 2 + (y - cy) ** 2 + (x - cx) ** 2
-                    if d2 <= 6:
-                        volume[z][y][x] += amp
+        sigma_blob = 1.5
+        d2 = (zz - cz) ** 2 + (yy - cy) ** 2 + (xx - cx) ** 2
+        volume += amp * np.exp(-d2 / (2.0 * sigma_blob ** 2))
     return volume
-
-
-def _binary_from_labels(labels: list[list[list[int]]]) -> list[list[list[bool]]]:
-    return [[[v > 0 for v in row] for row in plane] for plane in labels]
-
-
-def _apply_binary_mask(binary: list[list[list[bool]]], labels: list[list[list[int]]]) -> list[list[list[int]]]:
-    return [[[labels[z][y][x] if binary[z][y][x] else 0 for x in range(len(labels[0][0]))] for y in range(len(labels[0]))] for z in range(len(labels))]
 
 
 def _write_csv(path: Path, rows: list[dict[str, object]]) -> None:
@@ -132,6 +123,8 @@ def main() -> int:
         source = "nexus"
         try:
             volume = load_primary_volume(scan.path)
+            if not isinstance(volume, np.ndarray):
+                volume = np.asarray(volume, dtype=np.float64)
         except MissingH5DependencyError:
             volume = _synth_volume_from_file(scan.path)
             source = "synthetic_fallback"
@@ -139,8 +132,7 @@ def main() -> int:
             volume = _synth_volume_from_file(scan.path)
             source = "synthetic_fallback"
 
-        flat = [v for plane in volume for row in plane for v in row]
-        threshold = otsu_threshold(flat)
+        threshold = otsu_threshold(volume.ravel())
         result = segment_classical(
             volume,
             threshold=threshold,
@@ -150,9 +142,9 @@ def main() -> int:
         )
 
         labels = remove_small_objects(result.labeled_volume, min_size=max(1, args.min_size))
-        binary = _binary_from_labels(labels)
+        binary = labels > 0
         binary = fill_holes_binary(binary)
-        labels = _apply_binary_mask(binary, labels)
+        labels = np.where(binary, labels, 0)
         labels = relabel_sequential(labels)
 
         table = extract_instance_table(labels, volume)
@@ -191,41 +183,6 @@ def main() -> int:
 
     print(json.dumps(summaries, indent=2))
     return 0 if summaries else 1
-    parser.add_argument("--blur-passes", type=int, default=1, help="Number of lightweight Gaussian blur passes")
-    parser.add_argument("--seed-separation", type=int, default=1, help="Minimum seed separation in voxels")
-    return parser
-
-
-def main() -> int:
-    args = build_parser().parse_args()
-    scans = discover_operando_scans(Path(args.root))
-
-    payload: list[dict[str, object]] = []
-    errors = 0
-
-    for scan in scans:
-        item: dict[str, object] = {"scan": scan.scan_name, "file": str(scan.path)}
-        try:
-            volume = load_primary_volume(scan.path)
-            flat = [v for plane in volume for row in plane for v in row]
-            threshold = otsu_threshold(flat)
-            result = segment_classical(
-                volume,
-                threshold=threshold,
-                blur_passes=max(1, args.blur_passes),
-                min_seed_separation=max(1, args.seed_separation),
-            )
-            item["threshold"] = result.threshold
-            item["seed_count"] = result.seed_count
-            item["component_count"] = result.component_count
-        except (MissingH5DependencyError, KeyError, ValueError) as exc:
-            item["error"] = str(exc)
-            errors += 1
-
-        payload.append(item)
-
-    print(json.dumps(payload, indent=2))
-    return 1 if errors == len(payload) and payload else 0
 
 
 if __name__ == "__main__":

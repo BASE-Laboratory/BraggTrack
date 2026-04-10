@@ -1,10 +1,13 @@
 """Classical 3D segmentation building blocks for Week 2."""
-"""Classical 3D segmentation building blocks for Week 2.1."""
 
 from __future__ import annotations
 
-from collections import deque
 from dataclasses import dataclass
+
+import numpy as np
+from scipy.ndimage import gaussian_filter, laplace
+from skimage.feature import peak_local_max
+from skimage.segmentation import watershed
 
 
 @dataclass(frozen=True)
@@ -12,225 +15,120 @@ class ClassicalSegmentationResult:
     threshold: float
     seed_count: int
     component_count: int
-    labeled_volume: list[list[list[int]]]
-    response: list[list[list[float]]]
+    labeled_volume: np.ndarray
+    response: np.ndarray
 
 
-def _shape(volume: list[list[list[float]]]) -> tuple[int, int, int]:
-    return len(volume), len(volume[0]), len(volume[0][0])
-
-
-def _zeros_like(volume: list[list[list[float]]], value: float = 0.0) -> list[list[list[float]]]:
-    z, y, x = _shape(volume)
-    return [[[value for _ in range(x)] for _ in range(y)] for _ in range(z)]
-
-
-def gaussian_blur_3d(volume: list[list[list[float]]], passes: int = 1) -> list[list[list[float]]]:
-    """Apply a lightweight separable [1,2,1]/4 blur along each axis."""
-
-    z_max, y_max, x_max = _shape(volume)
-    current = [[[float(v) for v in row] for row in plane] for plane in volume]
-
-    def blur_axis_x(src: list[list[list[float]]]) -> list[list[list[float]]]:
-        out = _zeros_like(src)
-        for z in range(z_max):
-            for y in range(y_max):
-                for x in range(x_max):
-                    left = src[z][y][x - 1] if x > 0 else src[z][y][x]
-                    mid = src[z][y][x]
-                    right = src[z][y][x + 1] if x + 1 < x_max else src[z][y][x]
-                    out[z][y][x] = (left + 2 * mid + right) / 4.0
-        return out
-
-    def blur_axis_y(src: list[list[list[float]]]) -> list[list[list[float]]]:
-        out = _zeros_like(src)
-        for z in range(z_max):
-            for y in range(y_max):
-                for x in range(x_max):
-                    up = src[z][y - 1][x] if y > 0 else src[z][y][x]
-                    mid = src[z][y][x]
-                    down = src[z][y + 1][x] if y + 1 < y_max else src[z][y][x]
-                    out[z][y][x] = (up + 2 * mid + down) / 4.0
-        return out
-
-    def blur_axis_z(src: list[list[list[float]]]) -> list[list[list[float]]]:
-        out = _zeros_like(src)
-        for z in range(z_max):
-            for y in range(y_max):
-                for x in range(x_max):
-                    prev = src[z - 1][y][x] if z > 0 else src[z][y][x]
-                    mid = src[z][y][x]
-                    nxt = src[z + 1][y][x] if z + 1 < z_max else src[z][y][x]
-                    out[z][y][x] = (prev + 2 * mid + nxt) / 4.0
-        return out
-
+def gaussian_blur_3d(volume: np.ndarray, passes: int = 1, sigma: float = 1.0) -> np.ndarray:
+    """Apply Gaussian blur along each axis."""
+    result = np.asarray(volume, dtype=np.float64)
     for _ in range(max(1, passes)):
-        current = blur_axis_x(current)
-        current = blur_axis_y(current)
-        current = blur_axis_z(current)
-
-    return current
+        result = gaussian_filter(result, sigma=sigma)
+    return result
 
 
-def laplacian_3d(volume: list[list[list[float]]]) -> list[list[list[float]]]:
+def laplacian_3d(volume: np.ndarray) -> np.ndarray:
     """6-neighbor discrete Laplacian."""
-
-    z_max, y_max, x_max = _shape(volume)
-    out = _zeros_like(volume)
-
-    for z in range(z_max):
-        for y in range(y_max):
-            for x in range(x_max):
-                center = volume[z][y][x]
-                neighbors = [
-                    volume[z - 1][y][x] if z > 0 else center,
-                    volume[z + 1][y][x] if z + 1 < z_max else center,
-                    volume[z][y - 1][x] if y > 0 else center,
-                    volume[z][y + 1][x] if y + 1 < y_max else center,
-                    volume[z][y][x - 1] if x > 0 else center,
-                    volume[z][y][x + 1] if x + 1 < x_max else center,
-                ]
-                out[z][y][x] = sum(neighbors) - 6.0 * center
-
-    return out
+    return laplace(np.asarray(volume, dtype=np.float64)).astype(np.float64)
 
 
-def log_enhance_3d(volume: list[list[list[float]]], blur_passes: int = 1) -> list[list[list[float]]]:
+def log_enhance_3d(
+    volume: np.ndarray, blur_passes: int = 1, sigma: float = 1.0,
+) -> np.ndarray:
     """LoG-like enhancement: blur then negative Laplacian."""
-
-    smoothed = gaussian_blur_3d(volume, passes=blur_passes)
+    smoothed = gaussian_blur_3d(volume, passes=blur_passes, sigma=sigma)
     lap = laplacian_3d(smoothed)
-    return [[[-v for v in row] for row in plane] for plane in lap]
+    return -lap
 
 
 def h_maxima_seeds(
-    volume: list[list[list[float]]],
+    volume: np.ndarray,
     min_value: float,
     h: float,
     min_separation: int = 1,
 ) -> list[tuple[int, int, int]]:
-    """Find h-maxima seeds above threshold with non-maximum suppression."""
+    """Find h-maxima seeds above threshold with non-maximum suppression.
 
-    z_max, y_max, x_max = _shape(volume)
-    candidates: list[tuple[int, int, int, float]] = []
+    Each seed must be a local maximum whose value exceeds the highest
+    neighbour by at least *h*, and must be >= *min_value*.
+    """
+    vol = np.asarray(volume, dtype=np.float64)
+    coords = peak_local_max(
+        vol,
+        min_distance=max(1, min_separation),
+        threshold_abs=min_value,
+    )
+    if len(coords) == 0:
+        return []
+
+    seeds: list[tuple[int, int, int]] = []
+    for coord in coords:
+        z, y, x = int(coord[0]), int(coord[1]), int(coord[2])
+        center_val = vol[z, y, x]
+        z_lo, z_hi = max(0, z - 1), min(vol.shape[0], z + 2)
+        y_lo, y_hi = max(0, y - 1), min(vol.shape[1], y + 2)
+        x_lo, x_hi = max(0, x - 1), min(vol.shape[2], x + 2)
+        neighborhood = vol[z_lo:z_hi, y_lo:y_hi, x_lo:x_hi].copy()
+        neighborhood[z - z_lo, y - y_lo, x - x_lo] = -np.inf
+        max_neighbor = neighborhood.max()
+        if center_val - max_neighbor >= h:
+            seeds.append((z, y, x))
+
+    return seeds
+
+
 def local_maxima_seeds(
-    volume: list[list[list[float]]],
+    volume: np.ndarray,
     min_value: float,
     min_separation: int = 1,
 ) -> list[tuple[int, int, int]]:
     """Find local maxima seeds above a minimum value."""
-
-    z_max, y_max, x_max = _shape(volume)
-    seeds: list[tuple[int, int, int, float]] = []
-
-    for z in range(z_max):
-        for y in range(y_max):
-            for x in range(x_max):
-                center = volume[z][y][x]
-                if center < min_value:
-                    continue
-
-                max_neighbor = -10**18
-                is_max = True
-                for nz in range(max(0, z - 1), min(z_max, z + 2)):
-                    for ny in range(max(0, y - 1), min(y_max, y + 2)):
-                        for nx in range(max(0, x - 1), min(x_max, x + 2)):
-                            if (nz, ny, nx) == (z, y, x):
-                                continue
-                            neighbor = volume[nz][ny][nx]
-                            if neighbor > center:
-                                is_max = False
-                                break
-                            if neighbor > max_neighbor:
-                                max_neighbor = neighbor
-                            if volume[nz][ny][nx] > center:
-                                is_max = False
-                                break
-                        if not is_max:
-                            break
-                    if not is_max:
-                        break
-
-                if is_max and (center - max_neighbor) >= h:
-                    candidates.append((z, y, x, center))
-
-    candidates.sort(key=lambda item: item[3], reverse=True)
-    picked: list[tuple[int, int, int]] = []
-
-    for z, y, x, _ in candidates:
-                if is_max:
-                    seeds.append((z, y, x, center))
-
-    seeds.sort(key=lambda item: item[3], reverse=True)
-    picked: list[tuple[int, int, int]] = []
-
-    for z, y, x, _ in seeds:
-        if all(abs(z - pz) > min_separation or abs(y - py) > min_separation or abs(x - px) > min_separation for pz, py, px in picked):
-            picked.append((z, y, x))
-
-    return picked
+    vol = np.asarray(volume, dtype=np.float64)
+    coords = peak_local_max(
+        vol,
+        min_distance=max(1, min_separation),
+        threshold_abs=min_value,
+    )
+    return [(int(c[0]), int(c[1]), int(c[2])) for c in coords]
 
 
 def watershed_from_seeds(
-    response: list[list[list[float]]],
+    response: np.ndarray,
     seeds: list[tuple[int, int, int]],
     threshold: float,
-) -> list[list[list[int]]]:
-    """Simple multi-source region growing over voxels above threshold."""
-
-    z_max, y_max, x_max = _shape(response)
-    labels = [[[0 for _ in range(x_max)] for _ in range(y_max)] for _ in range(z_max)]
-    queue: deque[tuple[int, int, int, int]] = deque()
-
+) -> np.ndarray:
+    """Seeded watershed over voxels above threshold."""
+    response = np.asarray(response, dtype=np.float64)
+    markers = np.zeros(response.shape, dtype=np.int32)
     for label_id, (z, y, x) in enumerate(seeds, start=1):
-        if response[z][y][x] >= threshold:
-            labels[z][y][x] = label_id
-            queue.append((z, y, x, label_id))
+        markers[z, y, x] = label_id
 
-    while queue:
-        z, y, x, label_id = queue.popleft()
-        for nz, ny, nx in ((z - 1, y, x), (z + 1, y, x), (z, y - 1, x), (z, y + 1, x), (z, y, x - 1), (z, y, x + 1)):
-            if not (0 <= nz < z_max and 0 <= ny < y_max and 0 <= nx < x_max):
-                continue
-            if labels[nz][ny][nx] != 0 or response[nz][ny][nx] < threshold:
-            if labels[nz][ny][nx] != 0:
-                continue
-            if response[nz][ny][nx] < threshold:
-                continue
-            labels[nz][ny][nx] = label_id
-            queue.append((nz, ny, nx, label_id))
-
-    return labels
+    mask = response >= threshold
+    labeled = watershed(-response, markers=markers, mask=mask)
+    return labeled.astype(np.int32)
 
 
-def _count_labels(labels: list[list[list[int]]]) -> int:
-    return len({v for plane in labels for row in plane for v in row if v > 0})
-    found = {v for plane in labels for row in plane for v in row if v > 0}
-    return len(found)
+def _count_labels(labels: np.ndarray) -> int:
+    return len(np.unique(labels[labels > 0]))
 
 
 def segment_classical(
-    volume: list[list[list[float]]],
+    volume: np.ndarray,
     threshold: float,
     blur_passes: int = 1,
+    sigma: float = 1.0,
     h_value: float = 0.1,
     min_seed_separation: int = 1,
 ) -> ClassicalSegmentationResult:
     """Run classical LoG + h-maxima + seeded watershed pipeline."""
-
-    response = log_enhance_3d(volume, blur_passes=blur_passes)
+    volume = np.asarray(volume, dtype=np.float64)
+    response = log_enhance_3d(volume, blur_passes=blur_passes, sigma=sigma)
     seeds = h_maxima_seeds(
         response,
         min_value=threshold,
         h=h_value,
         min_separation=min_seed_separation,
     )
-    min_seed_separation: int = 1,
-) -> ClassicalSegmentationResult:
-    """Run classical LoG + local maxima + seeded watershed pipeline."""
-
-    response = log_enhance_3d(volume, blur_passes=blur_passes)
-    seeds = local_maxima_seeds(response, min_value=threshold, min_separation=min_seed_separation)
     labels = watershed_from_seeds(response, seeds=seeds, threshold=threshold)
     return ClassicalSegmentationResult(
         threshold=threshold,
