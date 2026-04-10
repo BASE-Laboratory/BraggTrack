@@ -30,3 +30,12 @@ python -m braggtrack.cli.validate_dataset .
 ```
 
 If `h5py` is unavailable in your environment, scan discovery and validation still run and include a clear warning in the output payload.
+
+## CI/CD
+
+GitHub Actions CI now runs:
+
+- unit tests (`python -m unittest discover -s tests -v`)
+- Week 1 acceptance checks (`python scripts/check_acceptance.py`)
+
+The acceptance script verifies scan discovery/order/monotonicity and fails only on unmet acceptance criteria (warnings are reported but do not fail by themselves).
