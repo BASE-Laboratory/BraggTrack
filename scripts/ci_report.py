@@ -108,12 +108,16 @@ def main() -> int:
     wk2_ok_cmd, wk2_payload, _ = run_cmd_json([sys.executable, "scripts/check_week2_acceptance.py"], "Week 2 Acceptance")
     wk2_ok = wk2_ok_cmd and isinstance(wk2_payload, dict) and wk2_payload.get("failures") == []
 
-    all_ok = unit_ok and acc_ok and smoke_ok and wk2_ok
+    wk3_ok_cmd, wk3_payload, _ = run_cmd_json([sys.executable, "scripts/check_week3_acceptance.py"], "Week 3 Acceptance")
+    wk3_ok = wk3_ok_cmd and isinstance(wk3_payload, dict) and wk3_payload.get("failures") == []
+
+    all_ok = unit_ok and acc_ok and smoke_ok and wk2_ok and wk3_ok
     print("\n=== Summary ===")
     print(f"unit_tests={'PASS' if unit_ok else 'FAIL'}")
     print(f"acceptance={'PASS' if acc_ok else 'FAIL'}")
     print(f"smoke={'PASS' if smoke_ok else 'FAIL'}")
     print(f"week2_acceptance={'PASS' if wk2_ok else 'FAIL'}")
+    print(f"week3_acceptance={'PASS' if wk3_ok else 'FAIL'}")
     print(f"overall={'PASS' if all_ok else 'FAIL'}")
 
     return 0 if all_ok else 1
