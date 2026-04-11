@@ -9,9 +9,14 @@ Checks:
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
-from braggtrack.io import BeamlineAdapter, validate_sequence
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from braggtrack.io import BeamlineAdapter, resolve_dataset_root, validate_sequence
 
 
 EXPECTED_SCAN_COUNT = 3
@@ -19,7 +24,7 @@ EXPECTED_INDEXES = [1, 2, 3]
 
 
 def main() -> int:
-    adapter = BeamlineAdapter(Path('.'))
+    adapter = BeamlineAdapter(resolve_dataset_root(None))
     sequence = adapter.build_sequence()
     issues = validate_sequence(sequence)
 

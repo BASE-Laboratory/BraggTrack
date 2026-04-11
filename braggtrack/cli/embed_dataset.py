@@ -9,13 +9,23 @@ from pathlib import Path
 
 import numpy as np
 
-from braggtrack.io import MissingH5DependencyError, discover_operando_scans, load_primary_volume
+from braggtrack.io import (
+    MissingH5DependencyError,
+    discover_operando_scans,
+    load_primary_volume,
+    resolve_dataset_root,
+)
 from braggtrack.semantic import crop_spot_cube, make_multiview_encoder, orthogonal_mips
 
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("root", nargs="?", default=".", help="Dataset root (scan folders)")
+    p.add_argument(
+        "root",
+        nargs="?",
+        default=None,
+        help="Dataset root with scan folders (default: data/sample_operando if present, else .)",
+    )
     p.add_argument("--segdir", default="artifacts/week2", help="Segmentation output with features.csv + labels.npz")
     p.add_argument("--outdir", default="artifacts/week4", help="Embedding output root")
     p.add_argument("--margin", type=int, default=2, help="Voxel padding around each spot bbox")
@@ -68,7 +78,7 @@ def _load_feature_rows(path: Path) -> list[dict[str, object]]:
 
 def main() -> int:
     args = build_parser().parse_args()
-    root = Path(args.root)
+    root = resolve_dataset_root(args.root)
     segdir = Path(args.segdir)
     outdir = Path(args.outdir)
     outdir.mkdir(parents=True, exist_ok=True)

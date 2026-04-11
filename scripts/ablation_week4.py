@@ -1,7 +1,7 @@
 """Grid search over ``cost_alpha`` and ``cost_beta`` for Week 4 semantic tracking.
 
-Loads fresh feature tables from a Week 2 artifact directory for each grid point,
-optionally merges embeddings from ``embed_dataset`` output, runs
+Loads feature tables once (and caches ``embeddings.npz`` per scan in memory),
+deep-copies per grid point, optionally merges embeddings, runs
 :class:`~braggtrack.tracking.lifecycle.build_tracks`, and records
 :class:`~braggtrack.tracking.metrics.compute_tracking_metrics` for every
 (α, β) pair.
@@ -20,16 +20,13 @@ Example:
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import math
 from pathlib import Path
 from typing import Any
 
-from braggtrack.cli.track_dataset import (
-    _load_embeddings_npz,
-    _load_feature_csv,
-    _merge_embeddings,
-)
+from braggtrack.cli.track_dataset import _load_embeddings_npz, _load_feature_csv, _merge_embeddings
 from braggtrack.tracking import (
     GeometrySemanticCost,
     PositionShapeCost,
@@ -82,11 +79,10 @@ def _load_scan_tables(indir: Path) -> tuple[list[list[dict[str, Any]]], list[str
     return tables, names
 
 
-def _run_configuration(
+def _evaluate_tables(
     scan_tables: list[list[dict[str, Any]]],
     scan_names: list[str],
     *,
-    emb_root: Path | None,
     cost_alpha: float,
     cost_beta: float,
     position_weight: float,
@@ -96,15 +92,6 @@ def _run_configuration(
     gate_d: float,
     max_cost: float,
 ) -> dict[str, Any]:
-    if cost_beta != 0.0:
-        if emb_root is None:
-            raise ValueError("embedding-dir required when cost_beta > 0")
-        for rows, sname in zip(scan_tables, scan_names):
-            npz = emb_root / sname / "embeddings.npz"
-            if not npz.exists():
-                raise FileNotFoundError(npz)
-            _merge_embeddings(rows, _load_embeddings_npz(npz))
-
     geo = PositionShapeCost(
         position_weight=position_weight,
         shape_weight=shape_weight,
@@ -144,30 +131,39 @@ def main() -> int:
         print(json.dumps({"error": "indir not found", "path": str(indir)}))
         return 1
 
+    base_tables, scan_names = _load_scan_tables(indir)
+    if not base_tables:
+        print(json.dumps({"error": "No feature tables", "indir": str(indir)}))
+        return 1
+
+    emb_cache: dict[str, dict[int, Any]] = {}
+    if emb_root is not None and any(b != 0.0 for b in betas):
+        for sname in scan_names:
+            npz = emb_root / sname / "embeddings.npz"
+            if not npz.exists():
+                print(json.dumps({"error": "Missing embeddings", "path": str(npz)}))
+                return 1
+            emb_cache[sname] = _load_embeddings_npz(npz)
+
     rows_out: list[dict[str, Any]] = []
     for a in alphas:
         for b in betas:
-            scan_tables, scan_names = _load_scan_tables(indir)
-            if not scan_tables:
-                print(json.dumps({"error": "No feature tables", "indir": str(indir)}))
-                return 1
-            try:
-                row = _run_configuration(
-                    scan_tables,
-                    scan_names,
-                    emb_root=emb_root,
-                    cost_alpha=a,
-                    cost_beta=b,
-                    position_weight=args.position_weight,
-                    shape_weight=args.shape_weight,
-                    gate_mu=args.gate_mu,
-                    gate_chi=args.gate_chi,
-                    gate_d=args.gate_d,
-                    max_cost=args.max_cost,
-                )
-            except FileNotFoundError as exc:
-                print(json.dumps({"error": "Missing embeddings", "path": str(exc)}))
-                return 1
+            tables = [copy.deepcopy(t) for t in base_tables]
+            if b != 0.0:
+                for rows, sname in zip(tables, scan_names):
+                    _merge_embeddings(rows, emb_cache[sname])
+            row = _evaluate_tables(
+                tables,
+                scan_names,
+                cost_alpha=a,
+                cost_beta=b,
+                position_weight=args.position_weight,
+                shape_weight=args.shape_weight,
+                gate_mu=args.gate_mu,
+                gate_chi=args.gate_chi,
+                gate_d=args.gate_d,
+                max_cost=args.max_cost,
+            )
             rows_out.append(row)
 
     report = {

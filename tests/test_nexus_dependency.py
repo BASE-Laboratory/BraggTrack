@@ -1,6 +1,7 @@
 import unittest
 from unittest import mock
 
+from braggtrack.io import sample_operando_root
 from braggtrack.io.nexus import MissingH5DependencyError, extract_scan_metadata
 
 
@@ -11,7 +12,9 @@ class NexusDependencyTests(unittest.TestCase):
     )
     def test_extract_scan_metadata_requires_h5py(self, _m: object) -> None:
         with self.assertRaises(MissingH5DependencyError):
-            extract_scan_metadata("scan0001/pco_nf_0000_cropped.h5")
+            extract_scan_metadata(
+                sample_operando_root() / "scan0001" / "pco_nf_0000_cropped.h5"
+            )
 
 
 if __name__ == '__main__':

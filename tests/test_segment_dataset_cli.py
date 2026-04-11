@@ -5,15 +5,24 @@ import sys
 import unittest
 from pathlib import Path
 
+from braggtrack.io import sample_operando_root
+
 
 class SegmentDatasetCliTests(unittest.TestCase):
     def test_segment_dataset_writes_week2_artifacts(self) -> None:
         outdir = Path('artifacts/test_week2_cli')
         if outdir.exists():
-            shutil.rmtree(outdir)
+            shutil.rmtree(outdir, ignore_errors=True)
 
         proc = subprocess.run(
-            [sys.executable, '-m', 'braggtrack.cli.segment_dataset', '.', '--outdir', str(outdir)],
+            [
+                sys.executable,
+                '-m',
+                'braggtrack.cli.segment_dataset',
+                str(sample_operando_root()),
+                '--outdir',
+                str(outdir),
+            ],
             check=False,
             capture_output=True,
             text=True,

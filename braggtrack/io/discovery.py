@@ -20,7 +20,8 @@ def discover_operando_scans(root: str | Path, pattern: str = "pco_nf_*.h5") -> l
     Parameters
     ----------
     root:
-        Directory containing scan folders such as ``scan0001``.
+        Directory containing scan folders such as ``scan0001``. Bundled examples
+        live under ``data/sample_operando/`` in a source checkout.
     pattern:
         Glob pattern used within each scan folder.
 

@@ -24,7 +24,8 @@ def associate_frames(
         Feature-dict rows from :func:`extract_instance_table` for
         frame *t* and frame *t+1*.
     cost_fn : CostFunction
-        Callable returning the linking cost (``inf`` for gated pairs).
+        Must implement ``pairwise_cost_matrix(spots_t, spots_t1)`` returning
+        a dense ``(N, M)`` matrix (``inf`` for gated pairs).
     max_cost : float
         Hard upper bound — any assignment with cost > max_cost is
         discarded after the Hungarian solve.
@@ -46,15 +47,11 @@ def associate_frames(
     if n_t1 == 0:
         return [], list(range(n_t)), []
 
-    # Build cost matrix; use a large sentinel for gated-out pairs so
-    # the solver can still operate on a dense matrix.
+    # Dense costs from vectorised backend (``cdist``, matmul); replace
+    # non-finite entries with a sentinel for the Hungarian solver.
     SENTINEL = 1e18
-    cost_matrix = np.full((n_t, n_t1), SENTINEL, dtype=np.float64)
-    for i, si in enumerate(spots_t):
-        for j, sj in enumerate(spots_t1):
-            c = cost_fn(si, sj)
-            if math.isfinite(c):
-                cost_matrix[i, j] = c
+    raw = cost_fn.pairwise_cost_matrix(spots_t, spots_t1)
+    cost_matrix = np.where(np.isfinite(raw), raw, SENTINEL).astype(np.float64, copy=False)
 
     row_idx, col_idx = linear_sum_assignment(cost_matrix)
 

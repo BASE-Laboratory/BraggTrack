@@ -3,6 +3,8 @@
 import math
 import unittest
 
+import numpy as np
+
 from braggtrack.tracking.cost import PositionShapeCost
 from braggtrack.tracking.assignment import associate_frames
 from braggtrack.tracking.lifecycle import TrackEvent, build_tracks, tracks_to_table
@@ -20,6 +22,27 @@ def _spot(mu: float, chi: float, d: float,
 
 
 class TestPositionShapeCost(unittest.TestCase):
+    def test_pairwise_matrix_matches_scalar(self) -> None:
+        rng = np.random.RandomState(7)
+        spots_t = [_spot(float(rng.randn()), float(rng.randn()), float(rng.randn())) for _ in range(6)]
+        spots_t1 = [_spot(float(rng.randn()), float(rng.randn()), float(rng.randn())) for _ in range(8)]
+        fn = PositionShapeCost(
+            position_weight=1.1,
+            shape_weight=0.4,
+            gate_mu=2.5,
+            gate_chi=1.8,
+            gate_d=3.2,
+        )
+        mat = fn.pairwise_cost_matrix(spots_t, spots_t1)
+        self.assertEqual(mat.shape, (6, 8))
+        for i, si in enumerate(spots_t):
+            for j, sj in enumerate(spots_t1):
+                c = fn(si, sj)
+                if math.isfinite(c):
+                    self.assertAlmostEqual(float(mat[i, j]), c, places=10)
+                else:
+                    self.assertFalse(math.isfinite(float(mat[i, j])))
+
     def test_identical_spots_zero_cost(self) -> None:
         cost_fn = PositionShapeCost()
         s = _spot(1.0, 2.0, 3.0)

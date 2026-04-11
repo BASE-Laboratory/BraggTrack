@@ -2,13 +2,22 @@
 
 Semantic 4D kinematics and fracture tracking for operando diffraction using foundation vision models.
 
+## Repository layout
+
+- **`braggtrack/`** — Python package (I/O, segmentation, semantic embeddings, tracking, CLIs).
+- **`data/sample_operando/`** — bundled example scans (`scan0001` … `scan0003`, each with `pco_nf_0000_cropped.h5`). See [`data/sample_operando/README.md`](data/sample_operando/README.md).
+- **`docs/`** — [architecture](docs/architecture.md) and [coding practices](docs/coding-practices.md).
+- **`artifacts/`** — generated outputs (gitignored).
+
+Contributing: see [CONTRIBUTING.md](CONTRIBUTING.md).
+
 ## Included example scans
 
-This repository currently includes three sequential operando scan folders:
+Bundled under **`data/sample_operando/`**:
 
-- `scan0001/pco_nf_0000_cropped.h5`
-- `scan0002/pco_nf_0000_cropped.h5`
-- `scan0003/pco_nf_0000_cropped.h5`
+- `data/sample_operando/scan0001/pco_nf_0000_cropped.h5`
+- `data/sample_operando/scan0002/pco_nf_0000_cropped.h5`
+- `data/sample_operando/scan0003/pco_nf_0000_cropped.h5`
 
 ## Week 2 classical baseline status
 
@@ -20,10 +29,11 @@ Implemented segmentation stack:
 - post-processing (small-object cleanup + 3D hole fill)
 - feature extraction table (centroid, bbox, integrated intensity, covariance, eigenvalues)
 
-Run end-to-end segmentation artifacts on the three scans:
+Run end-to-end segmentation artifacts on the three scans (omit the path to use the bundled sample automatically, or pass it explicitly):
 
 ```bash
-python -m braggtrack.cli.segment_dataset . --outdir artifacts/week2
+python -m braggtrack.cli.segment_dataset --outdir artifacts/week2
+python -m braggtrack.cli.segment_dataset data/sample_operando --outdir artifacts/week2
 ```
 
 Outputs:
@@ -78,11 +88,13 @@ Implemented modules:
 ## Quick start
 
 ```bash
-python -m braggtrack.cli.inspect_datasets .
-python -m braggtrack.cli.validate_dataset .
+python -m braggtrack.cli.inspect_datasets
+python -m braggtrack.cli.validate_dataset
 python -m braggtrack.cli.segment_synthetic
-python -m braggtrack.cli.segment_dataset .
+python -m braggtrack.cli.segment_dataset --outdir artifacts/week2
 ```
+
+Each command resolves the dataset root via `braggtrack.io.paths`: **bundled `data/sample_operando` when present**, otherwise the current working directory. Pass an explicit path to use another dataset root.
 
 If `h5py` is unavailable in your environment, scan discovery and validation still run and include a clear warning in the output payload.
 

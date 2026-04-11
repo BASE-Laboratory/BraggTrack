@@ -48,6 +48,30 @@ class TestMockEncoder(unittest.TestCase):
         self.assertAlmostEqual(float(np.linalg.norm(v)), 1.0, places=5)
 
 
+class TestPairwiseSemanticMatrix(unittest.TestCase):
+    def test_pairwise_matches_scalar(self) -> None:
+        e0 = np.array([1.0, 0.0, 0.0], dtype=np.float64)
+        e1 = np.array([0.0, 1.0, 0.0], dtype=np.float64)
+        geo = PositionShapeCost(position_weight=1.0, shape_weight=0.0, gate_mu=5.0, gate_chi=5.0, gate_d=5.0)
+        fn = GeometrySemanticCost(geo, cost_alpha=0.75, cost_beta=0.5)
+        spots_t = [
+            {**_min_spot(), "centroid_mu": 0.0, "embedding": e0},
+            {**_min_spot(), "centroid_mu": 2.0, "embedding": e1},
+        ]
+        spots_t1 = [
+            {**_min_spot(), "centroid_mu": 0.2, "embedding": e0},
+            {**_min_spot(), "centroid_mu": 2.1, "embedding": e1},
+        ]
+        mat = fn.pairwise_cost_matrix(spots_t, spots_t1)
+        for i in range(2):
+            for j in range(2):
+                c = fn(spots_t[i], spots_t1[j])
+                if math.isfinite(c):
+                    self.assertAlmostEqual(float(mat[i, j]), c, places=10)
+                else:
+                    self.assertFalse(math.isfinite(float(mat[i, j])))
+
+
 class TestGeometrySemanticCost(unittest.TestCase):
     def test_beta_zero_matches_scaled_geometry(self) -> None:
         geo = PositionShapeCost(position_weight=2.0, shape_weight=0.0)
