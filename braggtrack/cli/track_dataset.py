@@ -8,7 +8,10 @@ import json
 from pathlib import Path
 from typing import Any
 
+import numpy as np
+
 from braggtrack.tracking import (
+    GeometrySemanticCost,
     PositionShapeCost,
     build_tracks,
     compute_tracking_metrics,
@@ -28,6 +31,23 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--gate-chi", type=float, default=float("inf"))
     parser.add_argument("--gate-d", type=float, default=float("inf"))
     parser.add_argument("--max-cost", type=float, default=float("inf"))
+    parser.add_argument(
+        "--embedding-dir",
+        default=None,
+        help="Week 4 root with scanXXXX/embeddings.npz (from embed_dataset)",
+    )
+    parser.add_argument(
+        "--cost-alpha",
+        type=float,
+        default=1.0,
+        help="Multiplier on geometry term when using semantic cost",
+    )
+    parser.add_argument(
+        "--cost-beta",
+        type=float,
+        default=0.0,
+        help="Multiplier on (1 - cos(embedding)); 0 disables semantic term",
+    )
     return parser
 
 
@@ -48,6 +68,23 @@ def _load_feature_csv(path: Path) -> list[dict[str, Any]]:
                         typed[k] = v
             rows.append(typed)
     return rows
+
+
+def _load_embeddings_npz(path: Path) -> dict[int, np.ndarray]:
+    with np.load(path) as z:
+        labels = z["labels"]
+        vectors = z["vectors"]
+    out: dict[int, np.ndarray] = {}
+    for i in range(int(labels.shape[0])):
+        out[int(labels[i])] = np.asarray(vectors[i], dtype=np.float64)
+    return out
+
+
+def _merge_embeddings(rows: list[dict[str, Any]], emb: dict[int, np.ndarray]) -> None:
+    for row in rows:
+        lid = int(row["label"])
+        if lid in emb:
+            row["embedding"] = emb[lid]
 
 
 def _write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
@@ -145,27 +182,52 @@ def main() -> int:
         print(json.dumps({"error": "No feature tables found", "indir": str(indir)}))
         return 1
 
-    cost_fn = PositionShapeCost(
+    if args.cost_beta != 0.0 and not args.embedding_dir:
+        print(json.dumps({"error": "--cost-beta > 0 requires --embedding-dir"}))
+        return 1
+
+    emb_root = Path(args.embedding_dir) if args.embedding_dir else None
+    if emb_root is not None and args.cost_beta != 0.0:
+        for rows, sname in zip(scan_tables, scan_names):
+            npz = emb_root / sname / "embeddings.npz"
+            if not npz.exists():
+                print(json.dumps({"error": "Missing embeddings.npz", "path": str(npz)}))
+                return 1
+            _merge_embeddings(rows, _load_embeddings_npz(npz))
+
+    geo = PositionShapeCost(
         position_weight=args.position_weight,
         shape_weight=args.shape_weight,
         gate_mu=args.gate_mu,
         gate_chi=args.gate_chi,
         gate_d=args.gate_d,
     )
+    if args.cost_beta != 0.0:
+        cost_fn = GeometrySemanticCost(
+            geo, cost_alpha=args.cost_alpha, cost_beta=args.cost_beta,
+        )
+    else:
+        cost_fn = geo
 
     G = build_tracks(scan_tables, cost_fn=cost_fn, max_cost=args.max_cost)
     metrics = compute_tracking_metrics(G, n_scans=len(scan_tables))
 
     track_rows = tracks_to_table(G)
+    for tr in track_rows:
+        tr.pop("embedding", None)
     _write_csv(outdir / "tracks.csv", track_rows)
     (outdir / "tracking_metrics.json").write_text(json.dumps(metrics, indent=2))
 
+    schema_version = "week4.v1" if args.cost_beta != 0.0 else "week3.v1"
     summary = {
         "scan_names": scan_names,
         "n_scans": len(scan_tables),
         "spots_per_scan": [len(t) for t in scan_tables],
         **metrics,
-        "schema_version": "week3.v1",
+        "schema_version": schema_version,
+        "cost_alpha": args.cost_alpha,
+        "cost_beta": args.cost_beta,
+        "embedding_dir": str(emb_root) if emb_root else None,
     }
     (outdir / "tracking_summary.json").write_text(json.dumps(summary, indent=2))
     _write_notebook(outdir / "qc" / "week3_tracking_qc.ipynb")

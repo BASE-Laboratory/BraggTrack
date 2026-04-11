@@ -149,6 +149,7 @@ def main() -> int:
 
         table = extract_instance_table(labels, volume)
         _write_csv(scan_out / "features.csv", table)
+        np.savez_compressed(scan_out / "labels.npz", labels=labels.astype(np.int32, copy=False))
         (scan_out / "summary.json").write_text(
             json.dumps(
                 {
@@ -159,6 +160,7 @@ def main() -> int:
                     "seed_count": result.seed_count,
                     "component_count": len(table),
                     "schema_version": "week2.v1",
+                    "labels_archive": str(scan_out / "labels.npz"),
                 },
                 indent=2,
             )
@@ -173,6 +175,7 @@ def main() -> int:
                 "feature_rows": len(table),
                 "summary": str(scan_out / "summary.json"),
                 "features": str(scan_out / "features.csv"),
+                "labels_archive": str(scan_out / "labels.npz"),
                 "schema_version": "week2.v1",
             }
         )

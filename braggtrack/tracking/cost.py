@@ -1,13 +1,15 @@
 """Pluggable cost functions for frame-to-frame spot association.
 
 Week 3 provides a physics-only baseline (position + shape).
-Week 4 will add a semantic term without touching assignment logic.
+Week 4 adds a semantic term (cosine on fused DINO-style embeddings).
 """
 
 from __future__ import annotations
 
 import math
 from typing import Protocol
+
+import numpy as np
 
 
 class CostFunction(Protocol):
@@ -67,3 +69,42 @@ class PositionShapeCost:
         shape_dist2 = deig1 ** 2 + deig2 ** 2 + deig3 ** 2
 
         return self.position_weight * pos_dist2 + self.shape_weight * shape_dist2
+
+
+class GeometrySemanticCost:
+    """α × geometry + β × (1 − cos(f_i, f_j)) with geometry from :class:`PositionShapeCost`.
+
+    Embeddings must be L2-normalised; ``sim`` is the dot product.  When
+    ``cost_beta`` is zero, the semantic branch is skipped and missing
+    embeddings are ignored.  For ``cost_beta > 0``, missing embeddings
+    yield infinite cost.
+    """
+
+    def __init__(
+        self,
+        geometry: PositionShapeCost,
+        *,
+        cost_alpha: float = 1.0,
+        cost_beta: float = 0.0,
+    ) -> None:
+        self.geometry = geometry
+        self.cost_alpha = float(cost_alpha)
+        self.cost_beta = float(cost_beta)
+
+    def __call__(self, spot_i: dict, spot_j: dict) -> float:
+        g = self.geometry(spot_i, spot_j)
+        if not math.isfinite(g):
+            return g
+        if self.cost_beta == 0.0:
+            return self.cost_alpha * g
+        fi = spot_i.get("embedding")
+        fj = spot_j.get("embedding")
+        if fi is None or fj is None:
+            return math.inf
+        a = np.asarray(fi, dtype=np.float64).ravel()
+        b = np.asarray(fj, dtype=np.float64).ravel()
+        if a.size == 0 or b.size == 0 or a.shape != b.shape:
+            return math.inf
+        sim = float(np.dot(a, b))
+        sim = max(-1.0, min(1.0, sim))
+        return self.cost_alpha * g + self.cost_beta * (1.0 - sim)

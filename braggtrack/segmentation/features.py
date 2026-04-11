@@ -11,6 +11,9 @@ def extract_instance_table(
 ) -> list[dict[str, float | int]]:
     """Compute centroid, bbox, integrated intensity, covariance and eigenvalues.
 
+    Voxel array axes are ``(z, y, x)`` mapping to reciprocal-space coordinates
+    as **μ → z**, **d → y**, **χ → x** (STFC / operando convention).
+
     Intensity-weighted centroids guard against negative or zero total
     intensity by falling back to the geometric (unweighted) centroid.
     """
@@ -73,9 +76,9 @@ def extract_instance_table(
                 "label": int(lbl),
                 "voxel_count": count,
                 "integrated_intensity": sum_i,
-                "centroid_mu": cx,
-                "centroid_chi": cy,
-                "centroid_d": cz,
+                "centroid_mu": cz,
+                "centroid_chi": cx,
+                "centroid_d": cy,
                 "bbox_min_z": int(coords[:, 0].min()),
                 "bbox_max_z": int(coords[:, 0].max()),
                 "bbox_min_y": int(coords[:, 1].min()),
