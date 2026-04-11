@@ -10,7 +10,12 @@ from pathlib import Path
 
 import numpy as np
 
-from braggtrack.io import MissingH5DependencyError, discover_operando_scans, load_primary_volume
+from braggtrack.io import (
+    MissingH5DependencyError,
+    discover_operando_scans,
+    load_primary_volume,
+    resolve_dataset_root,
+)
 from braggtrack.segmentation import (
     extract_instance_table,
     fill_holes_binary,
@@ -23,7 +28,12 @@ from braggtrack.segmentation import (
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("root", nargs="?", default=".", help="Dataset root containing scan folders")
+    parser.add_argument(
+        "root",
+        nargs="?",
+        default=None,
+        help="Dataset root with scan folders (default: data/sample_operando if present, else .)",
+    )
     parser.add_argument("--outdir", default="artifacts/week2", help="Output artifact directory")
     parser.add_argument("--blur-passes", type=int, default=1)
     parser.add_argument("--seed-separation", type=int, default=1)
@@ -111,7 +121,7 @@ def _write_notebook(path: Path) -> None:
 
 def main() -> int:
     args = build_parser().parse_args()
-    scans = discover_operando_scans(Path(args.root))
+    scans = discover_operando_scans(resolve_dataset_root(args.root))
     outdir = Path(args.outdir)
     outdir.mkdir(parents=True, exist_ok=True)
 

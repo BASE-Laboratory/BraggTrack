@@ -13,7 +13,14 @@ import subprocess
 import sys
 from pathlib import Path
 
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from braggtrack.io import resolve_dataset_root
+
 OUTDIR = Path("artifacts/week3")
+DATASET_ROOT = resolve_dataset_root(None)
 
 
 def main() -> int:
@@ -21,7 +28,7 @@ def main() -> int:
     seg_dir = Path("artifacts/week2")
     if not (seg_dir / "segmentation_summary.json").exists():
         subprocess.run(
-            [sys.executable, "-m", "braggtrack.cli.segment_dataset", ".", "--outdir", str(seg_dir)],
+            [sys.executable, "-m", "braggtrack.cli.segment_dataset", str(DATASET_ROOT), "--outdir", str(seg_dir)],
             check=False, capture_output=True, text=True,
         )
 

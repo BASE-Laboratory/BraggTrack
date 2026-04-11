@@ -6,18 +6,28 @@ import argparse
 import json
 from pathlib import Path
 
-from braggtrack.io import MissingH5DependencyError, discover_operando_scans, extract_scan_metadata
+from braggtrack.io import (
+    MissingH5DependencyError,
+    discover_operando_scans,
+    extract_scan_metadata,
+    resolve_dataset_root,
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("root", nargs="?", default=".", help="Repository or dataset root directory")
+    parser.add_argument(
+        "root",
+        nargs="?",
+        default=None,
+        help="Dataset root with scan folders (default: data/sample_operando if present, else .)",
+    )
     return parser
 
 
 def main() -> int:
     args = build_parser().parse_args()
-    scans = discover_operando_scans(Path(args.root))
+    scans = discover_operando_scans(resolve_dataset_root(args.root))
 
     if not scans:
         print("No scan directories found.")

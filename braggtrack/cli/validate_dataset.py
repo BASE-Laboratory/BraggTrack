@@ -6,23 +6,29 @@ import argparse
 import json
 from pathlib import Path
 
-from braggtrack.io import BeamlineAdapter, validate_sequence
+from braggtrack.io import BeamlineAdapter, resolve_dataset_root, validate_sequence
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("root", nargs="?", default=".", help="Dataset root containing scan folders")
+    parser.add_argument(
+        "root",
+        nargs="?",
+        default=None,
+        help="Dataset root with scan folders (default: data/sample_operando if present, else .)",
+    )
     return parser
 
 
 def main() -> int:
     args = build_parser().parse_args()
-    adapter = BeamlineAdapter(Path(args.root))
+    root = resolve_dataset_root(args.root)
+    adapter = BeamlineAdapter(root)
     sequence = adapter.build_sequence()
     issues = validate_sequence(sequence)
 
     payload = {
-        "root": str(Path(args.root).resolve()),
+        "root": str(root.resolve()),
         "scan_count": len(sequence.scans),
         "is_monotonic": sequence.is_monotonic(),
         "scans": [

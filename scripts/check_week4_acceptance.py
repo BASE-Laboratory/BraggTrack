@@ -8,7 +8,14 @@ import subprocess
 import sys
 from pathlib import Path
 
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from braggtrack.io import resolve_dataset_root
+
 OUT_EMB = Path("artifacts/week4")
+DATASET_ROOT = resolve_dataset_root(None)
 OUT_TRACK = Path("artifacts/week4_track")
 SEG = Path("artifacts/week2")
 
@@ -23,7 +30,7 @@ def main() -> int:
                 break
     if need_seg:
         subprocess.run(
-            [sys.executable, "-m", "braggtrack.cli.segment_dataset", ".", "--outdir", str(seg_dir)],
+            [sys.executable, "-m", "braggtrack.cli.segment_dataset", str(DATASET_ROOT), "--outdir", str(seg_dir)],
             check=False,
             capture_output=True,
             text=True,
@@ -35,7 +42,7 @@ def main() -> int:
             sys.executable,
             "-m",
             "braggtrack.cli.embed_dataset",
-            ".",
+            str(DATASET_ROOT),
             "--segdir",
             str(seg_dir),
             "--outdir",

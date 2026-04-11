@@ -8,13 +8,19 @@ import subprocess
 import sys
 from pathlib import Path
 
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from braggtrack.io import resolve_dataset_root
 
 OUTDIR = Path("artifacts/week2")
+DATASET_ROOT = resolve_dataset_root(None)
 
 
 def main() -> int:
     proc = subprocess.run(
-        [sys.executable, "-m", "braggtrack.cli.segment_dataset", ".", "--outdir", str(OUTDIR)],
+        [sys.executable, "-m", "braggtrack.cli.segment_dataset", str(DATASET_ROOT), "--outdir", str(OUTDIR)],
         check=False,
         capture_output=True,
         text=True,
