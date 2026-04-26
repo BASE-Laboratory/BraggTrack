@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 # braggtrack/io/paths.py → parents[2] is repository root when installed from source tree.
@@ -10,7 +11,16 @@ SAMPLE_OPERANDO_DIR = _REPO_ROOT / "data" / "sample_operando"
 
 
 def sample_operando_root() -> Path:
-    """Directory containing bundled ``scanNNNN/`` example folders (may be absent in sdist-only installs)."""
+    """Directory containing bundled ``scanNNNN/`` example folders.
+
+    Checks ``BRAGGTRACK_DATA_ROOT`` env var first (for Colab / custom installs),
+    then falls back to the in-tree ``data/sample_operando/``.
+    """
+    env = os.environ.get("BRAGGTRACK_DATA_ROOT")
+    if env:
+        p = Path(env)
+        if p.is_dir():
+            return p
     return SAMPLE_OPERANDO_DIR
 
 
