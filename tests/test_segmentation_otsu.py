@@ -2,7 +2,13 @@ import unittest
 
 import numpy as np
 
-from braggtrack.segmentation import connected_components_3d, otsu_threshold, segment_volume
+from braggtrack.segmentation import (
+    connected_components_3d,
+    flag_outlier_frames,
+    otsu_threshold,
+    segment_volume,
+    smooth_thresholds,
+)
 
 
 class OtsuSegmentationTests(unittest.TestCase):
@@ -32,6 +38,42 @@ class OtsuSegmentationTests(unittest.TestCase):
 
     def test_connected_components_empty(self) -> None:
         self.assertEqual(connected_components_3d(np.array([[[False]]])), 0)
+
+
+class SmoothThresholdTests(unittest.TestCase):
+    def test_stable_sequence_unchanged(self) -> None:
+        raw = [180.0, 181.0, 180.5, 179.8, 180.2]
+        smoothed = smooth_thresholds(raw, window=3)
+        self.assertEqual(len(smoothed), 5)
+        for r, s in zip(raw, smoothed):
+            self.assertAlmostEqual(s, r, delta=1.5)
+
+    def test_single_outlier_suppressed(self) -> None:
+        raw = [180.0, 180.0, 500.0, 180.0, 180.0]
+        smoothed = smooth_thresholds(raw, window=3)
+        self.assertAlmostEqual(float(smoothed[2]), 180.0, delta=1.0)
+
+    def test_gradual_drift_tracked(self) -> None:
+        raw = list(np.linspace(180, 200, 20))
+        smoothed = smooth_thresholds(raw, window=5)
+        self.assertAlmostEqual(float(smoothed[0]), 180.0, delta=3.0)
+        self.assertAlmostEqual(float(smoothed[-1]), 200.0, delta=3.0)
+
+    def test_flag_outlier_detects_flash(self) -> None:
+        raw = [180.0] * 10
+        raw[5] = 500.0
+        flags = flag_outlier_frames(raw, window=5)
+        self.assertTrue(flags[5])
+        self.assertFalse(any(flags[i] for i in range(10) if i != 5))
+
+    def test_single_frame(self) -> None:
+        smoothed = smooth_thresholds([182.0], window=5)
+        self.assertEqual(len(smoothed), 1)
+        self.assertAlmostEqual(float(smoothed[0]), 182.0)
+
+    def test_two_frames(self) -> None:
+        smoothed = smooth_thresholds([180.0, 184.0], window=5)
+        self.assertEqual(len(smoothed), 2)
 
 
 if __name__ == '__main__':

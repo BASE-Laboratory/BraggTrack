@@ -35,7 +35,8 @@ class ClassicalSegmentationTests(unittest.TestCase):
         volume = np.ones((size, size, size))
         for z, y, x in [(2, 2, 2), (2, 2, 3), (7, 7, 7), (7, 7, 6)]:
             volume[z, y, x] = 25.0
-        result = segment_classical(volume, threshold=0.01, blur_passes=1, h_value=0.0, min_seed_separation=1)
+        result = segment_classical(volume, threshold=0.01, blur_passes=1, h_value=0.0, min_seed_separation=1,
+                                   seed_response_percentile=99.5)
         self.assertGreaterEqual(result.seed_count, 2)
         self.assertGreaterEqual(result.component_count, 2)
 
@@ -52,7 +53,7 @@ class ClassicalSegmentationTests(unittest.TestCase):
             )
 
         thr = otsu_threshold(volume.ravel())
-        result = segment_classical(volume, threshold=thr)
+        result = segment_classical(volume, threshold=thr, seed_response_percentile=99.5)
         foreground_mask = volume >= thr
 
         # Every labelled voxel lies inside the intensity foreground.
@@ -71,7 +72,7 @@ class ClassicalSegmentationTests(unittest.TestCase):
         # A tiny intensity threshold admits almost all voxels; the seed
         # floor must still be tight enough on the response to pick only
         # the two peaks, not every flat voxel.
-        result = segment_classical(volume, threshold=0.5, h_value=0.0)
+        result = segment_classical(volume, threshold=0.5, h_value=0.0, seed_response_percentile=99.5)
         self.assertEqual(result.seed_count, 2)
 
     def test_watershed_from_seeds_takes_mask(self) -> None:

@@ -43,12 +43,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--seed-peak-fraction",
         type=float,
         default=0.2,
-        help="Seed must exceed this fraction of max(LoG response) inside the foreground",
+        help="Seed must exceed this fraction of the robust peak (p99.99) of LoG response inside the foreground",
     )
     parser.add_argument(
         "--seed-response-percentile",
         type=float,
-        default=99.5,
+        default=99.95,
         help="Seed must also exceed this percentile of the LoG response inside the foreground",
     )
     return parser
