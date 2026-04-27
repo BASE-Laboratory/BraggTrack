@@ -95,21 +95,60 @@ def local_maxima_seeds(
 def watershed_from_seeds(
     response: np.ndarray,
     seeds: list[tuple[int, int, int]],
-    threshold: float,
+    mask: np.ndarray,
 ) -> np.ndarray:
-    """Seeded watershed over voxels above threshold."""
+    """Seeded watershed over ``-response`` restricted to a boolean foreground ``mask``.
+
+    ``mask`` lives in the *intensity* domain — typically ``volume >= otsu``.
+    Passing a mask derived from the response itself under-shoots catastrophically
+    because the response and volume distributions are on different scales.
+    """
     response = np.asarray(response, dtype=np.float64)
     markers = np.zeros(response.shape, dtype=np.int32)
     for label_id, (z, y, x) in enumerate(seeds, start=1):
         markers[z, y, x] = label_id
 
-    mask = response >= threshold
-    labeled = watershed(-response, markers=markers, mask=mask)
+    labeled = watershed(-response, markers=markers, mask=np.asarray(mask, dtype=bool))
     return labeled.astype(np.int32)
 
 
 def _count_labels(labels: np.ndarray) -> int:
     return len(np.unique(labels[labels > 0]))
+
+
+_PERCENTILE_MIN_FOREGROUND = 100
+
+_ROBUST_PEAK_PERCENTILE = 99.99
+
+
+def _seed_floor_from_response(
+    response_foreground: np.ndarray,
+    *,
+    seed_peak_fraction: float,
+    seed_response_percentile: float,
+) -> float:
+    """Seed admissibility floor derived from the LoG response inside the foreground.
+
+    The fraction term uses a robust peak reference (99.99th percentile on
+    large foregrounds, absolute max on small ones) so a single outlier voxel
+    doesn't dominate. The percentile term suppresses noise seeds on large
+    foregrounds; it is skipped when the foreground is too small for a
+    meaningful percentile.
+    """
+    if response_foreground.size == 0:
+        return float("inf")
+    max_val = float(response_foreground.max())
+    min_val = float(response_foreground.min())
+    if response_foreground.size >= _PERCENTILE_MIN_FOREGROUND:
+        peak_ref = float(np.percentile(response_foreground, _ROBUST_PEAK_PERCENTILE))
+        floor_f = seed_peak_fraction * peak_ref
+        floor_p = float(np.percentile(response_foreground, seed_response_percentile))
+        seed_floor = max(floor_p, floor_f)
+    else:
+        floor_f = seed_peak_fraction * max_val
+        seed_floor = floor_f
+    eps = max(1e-9, 1e-6 * max(1.0, max_val - min_val))
+    return min(seed_floor, max_val - eps)
 
 
 def segment_classical(
@@ -119,17 +158,39 @@ def segment_classical(
     sigma: float = 1.0,
     h_value: float = 0.1,
     min_seed_separation: int = 1,
+    seed_peak_fraction: float = 0.2,
+    seed_response_percentile: float = 99.95,
 ) -> ClassicalSegmentationResult:
-    """Run classical LoG + h-maxima + seeded watershed pipeline."""
+    """Run classical LoG + h-maxima + seeded watershed pipeline.
+
+    Parameters
+    ----------
+    volume
+        Raw 3-D intensity cube.
+    threshold
+        **Intensity-domain** foreground threshold (e.g. from Otsu on ``volume``).
+        Voxels ``volume >= threshold`` define the watershed mask.
+    seed_peak_fraction, seed_response_percentile
+        Admissibility floor on the LoG response, computed *within the
+        foreground mask*. The fraction term uses a robust peak reference
+        (99.99th percentile) rather than the absolute max, so isolated
+        bright voxels don't inflate the floor.
+    """
     volume = np.asarray(volume, dtype=np.float64)
     response = log_enhance_3d(volume, blur_passes=blur_passes, sigma=sigma)
+    foreground = volume >= threshold
+    seed_floor = _seed_floor_from_response(
+        response[foreground],
+        seed_peak_fraction=seed_peak_fraction,
+        seed_response_percentile=seed_response_percentile,
+    )
     seeds = h_maxima_seeds(
         response,
-        min_value=threshold,
+        min_value=seed_floor,
         h=h_value,
         min_separation=min_seed_separation,
     )
-    labels = watershed_from_seeds(response, seeds=seeds, threshold=threshold)
+    labels = watershed_from_seeds(response, seeds=seeds, mask=foreground)
     return ClassicalSegmentationResult(
         threshold=threshold,
         seed_count=len(seeds),

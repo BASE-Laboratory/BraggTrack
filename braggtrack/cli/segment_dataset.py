@@ -39,6 +39,18 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--seed-separation", type=int, default=1)
     parser.add_argument("--h-value", type=float, default=0.1)
     parser.add_argument("--min-size", type=int, default=8)
+    parser.add_argument(
+        "--seed-peak-fraction",
+        type=float,
+        default=0.2,
+        help="Seed must exceed this fraction of the robust peak (p99.99) of LoG response inside the foreground",
+    )
+    parser.add_argument(
+        "--seed-response-percentile",
+        type=float,
+        default=99.95,
+        help="Seed must also exceed this percentile of the LoG response inside the foreground",
+    )
     return parser
 
 
@@ -149,6 +161,8 @@ def main() -> int:
             blur_passes=max(1, args.blur_passes),
             h_value=float(args.h_value),
             min_seed_separation=max(1, args.seed_separation),
+            seed_peak_fraction=float(args.seed_peak_fraction),
+            seed_response_percentile=float(args.seed_response_percentile),
         )
 
         labels = remove_small_objects(result.labeled_volume, min_size=max(1, args.min_size))

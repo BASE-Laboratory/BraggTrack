@@ -1,4 +1,9 @@
 __pycache__/
 *.pyc
 *.egg-info/
+dist/
+build/
+*.egg
 artifacts/
+.ipynb_checkpoints/
+_braggtrack_repo/
