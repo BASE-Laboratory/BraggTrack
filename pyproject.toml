@@ -9,7 +9,7 @@ description = "Semantic 4D kinematics and fracture tracking for operando diffrac
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
-authors = [{ name = "BraggTrack contributors" }]
+authors = [{ name = "James Le Houx", email = "j.lehoux@greenwich.ac.uk" }]
 classifiers = [
   "Development Status :: 3 - Alpha",
   "Intended Audience :: Science/Research",
@@ -27,6 +27,11 @@ dependencies = [
   "networkx>=3.2",
   "h5py>=3.10",
 ]
+
+[project.urls]
+Homepage = "https://github.com/BASE-Laboratory/BraggTrack"
+Repository = "https://github.com/BASE-Laboratory/BraggTrack"
+Issues = "https://github.com/BASE-Laboratory/BraggTrack/issues"
 
 [project.optional-dependencies]
 torch = [
