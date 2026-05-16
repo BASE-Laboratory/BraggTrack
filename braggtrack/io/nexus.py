@@ -16,9 +16,7 @@ def _require_h5py() -> Any:
 
         return h5py
     except ModuleNotFoundError as exc:
-        raise MissingH5DependencyError(
-            "h5py is required for HDF5/NeXus parsing. Install dependencies first."
-        ) from exc
+        raise MissingH5DependencyError("h5py is required for HDF5/NeXus parsing. Install dependencies first.") from exc
 
 
 def summarize_hdf5_tree(path: str | Path) -> list[tuple[str, str, tuple[int, ...] | None, str | None]]:
@@ -31,6 +29,7 @@ def summarize_hdf5_tree(path: str | Path) -> list[tuple[str, str, tuple[int, ...
     entries: list[tuple[str, str, tuple[int, ...] | None, str | None]] = []
 
     with h5py.File(path, "r") as handle:
+
         def visitor(name: str, obj: Any) -> None:
             if isinstance(obj, h5py.Group):
                 entries.append(("group", name, None, None))

@@ -32,7 +32,7 @@ class OtsuSegmentationTests(unittest.TestCase):
         volume[6, 6, 5] = 20.0
         volume[5, 6, 6] = 20.0
 
-        result = segment_volume(volume, method='otsu')
+        result = segment_volume(volume, method="otsu")
         self.assertEqual(result.component_count, 2)
         self.assertGreater(result.voxel_count, 0)
 
@@ -76,5 +76,5 @@ class SmoothThresholdTests(unittest.TestCase):
         self.assertEqual(len(smoothed), 2)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     unittest.main()

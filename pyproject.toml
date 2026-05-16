@@ -41,6 +41,8 @@ notebook = [
 dev = [
   "braggtrack[torch,notebook]",
   "pytest>=7.4",
+  "pytest-cov>=4.1",
+  "ruff>=0.4",
 ]
 
 [project.scripts]
@@ -56,3 +58,35 @@ include = ["braggtrack*"]
 
 [tool.setuptools.package-data]
 braggtrack = ["py.typed"]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 120
+
+[tool.ruff.lint]
+select = [
+  "E",    # pycodestyle errors
+  "W",    # pycodestyle warnings
+  "F",    # pyflakes
+  "I",    # isort
+  "UP",   # pyupgrade
+  "B",    # flake8-bugbear
+  "SIM",  # flake8-simplify
+  "TCH",  # flake8-type-checking
+]
+ignore = [
+  "E501",   # line length handled by formatter
+  "SIM108", # ternary operators not always clearer
+  "TCH",    # type-checking blocks: overly pedantic for scientific code
+  "B905",   # zip strict=: we control both iterables internally
+]
+
+[tool.ruff.lint.per-file-ignores]
+"scripts/*.py" = ["E402"]  # sys.path manipulation before imports is intentional
+
+[tool.ruff.lint.isort]
+known-first-party = ["braggtrack"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--tb=short"

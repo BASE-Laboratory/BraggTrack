@@ -5,19 +5,24 @@ import unittest
 
 import numpy as np
 
-from braggtrack.tracking.cost import PositionShapeCost
 from braggtrack.tracking.assignment import associate_frames
+from braggtrack.tracking.cost import PositionShapeCost
 from braggtrack.tracking.lifecycle import TrackEvent, build_tracks, tracks_to_table
 from braggtrack.tracking.metrics import compute_tracking_metrics
 from braggtrack.tracking.synthetic import generate_crossing_scenario
 
 
-def _spot(mu: float, chi: float, d: float,
-          eig: tuple[float, float, float] = (0.5, 0.5, 0.5)) -> dict:
+def _spot(mu: float, chi: float, d: float, eig: tuple[float, float, float] = (0.5, 0.5, 0.5)) -> dict:
     return {
-        "label": 1, "voxel_count": 10, "integrated_intensity": 100.0,
-        "centroid_mu": mu, "centroid_chi": chi, "centroid_d": d,
-        "eig_1": eig[0], "eig_2": eig[1], "eig_3": eig[2],
+        "label": 1,
+        "voxel_count": 10,
+        "integrated_intensity": 100.0,
+        "centroid_mu": mu,
+        "centroid_chi": chi,
+        "centroid_d": d,
+        "eig_1": eig[0],
+        "eig_2": eig[1],
+        "eig_3": eig[2],
     }
 
 
@@ -78,8 +83,7 @@ class TestAssignment(unittest.TestCase):
         spots_t = [_spot(1, 1, 1), _spot(10, 10, 10)]
         spots_t1 = [_spot(1.1, 1.1, 1.1), _spot(10.1, 10.1, 10.1)]
         cost_fn = PositionShapeCost()
-        matches, unmatched_t, unmatched_t1 = associate_frames(
-            spots_t, spots_t1, cost_fn)
+        matches, unmatched_t, unmatched_t1 = associate_frames(spots_t, spots_t1, cost_fn)
         self.assertEqual(len(matches), 2)
         self.assertEqual(unmatched_t, [])
         self.assertEqual(unmatched_t1, [])
@@ -92,11 +96,10 @@ class TestAssignment(unittest.TestCase):
         spots_t = [_spot(1, 1, 1), _spot(10, 10, 10)]
         spots_t1 = [_spot(1.1, 1.1, 1.1), _spot(50, 50, 50)]
         cost_fn = PositionShapeCost(gate_mu=5.0, gate_chi=5.0, gate_d=5.0)
-        matches, unmatched_t, unmatched_t1 = associate_frames(
-            spots_t, spots_t1, cost_fn)
+        matches, unmatched_t, unmatched_t1 = associate_frames(spots_t, spots_t1, cost_fn)
         self.assertEqual(len(matches), 1)
-        self.assertIn(1, unmatched_t)    # terminated
-        self.assertIn(1, unmatched_t1)   # born
+        self.assertIn(1, unmatched_t)  # terminated
+        self.assertIn(1, unmatched_t1)  # born
 
     def test_empty_frames(self) -> None:
         cost_fn = PositionShapeCost()
@@ -139,8 +142,7 @@ class TestLifecycle(unittest.TestCase):
         cost_fn = PositionShapeCost()
         G = build_tracks(tables, cost_fn)
         # Node for spot at (50,50,50) should be BORN
-        born_nodes = [n for n in G.nodes if G.nodes[n]["event"] == TrackEvent.BORN
-                      and G.nodes[n]["scan_idx"] == 1]
+        born_nodes = [n for n in G.nodes if G.nodes[n]["event"] == TrackEvent.BORN and G.nodes[n]["scan_idx"] == 1]
         self.assertEqual(len(born_nodes), 1)
 
     def test_termination_event(self) -> None:
@@ -224,5 +226,5 @@ class TestSyntheticScenario(unittest.TestCase):
         self.assertIsInstance(m["id_switch_count"], int)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     unittest.main()

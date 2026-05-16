@@ -21,10 +21,10 @@ from braggtrack.tracking import (
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("indir", nargs="?", default="artifacts/week2",
-                        help="Directory with per-scan feature CSVs (Week 2 output)")
-    parser.add_argument("--outdir", default="artifacts/week3",
-                        help="Output artifact directory")
+    parser.add_argument(
+        "indir", nargs="?", default="artifacts/week2", help="Directory with per-scan feature CSVs (Week 2 output)"
+    )
+    parser.add_argument("--outdir", default="artifacts/week3", help="Output artifact directory")
     parser.add_argument("--position-weight", type=float, default=1.0)
     parser.add_argument("--shape-weight", type=float, default=0.5)
     parser.add_argument("--gate-mu", type=float, default=float("inf"))
@@ -204,7 +204,9 @@ def main() -> int:
     )
     if args.cost_beta != 0.0:
         cost_fn = GeometrySemanticCost(
-            geo, cost_alpha=args.cost_alpha, cost_beta=args.cost_beta,
+            geo,
+            cost_alpha=args.cost_alpha,
+            cost_beta=args.cost_beta,
         )
     else:
         cost_fn = geo

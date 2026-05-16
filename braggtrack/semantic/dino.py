@@ -65,8 +65,7 @@ def _mips_to_rgb_uint8(mip: np.ndarray) -> np.ndarray:
 
 
 class MultiviewEncoder(Protocol):
-    def embed(self, mip_mu: np.ndarray, mip_chi: np.ndarray, mip_d: np.ndarray) -> np.ndarray:
-        ...
+    def embed(self, mip_mu: np.ndarray, mip_chi: np.ndarray, mip_d: np.ndarray) -> np.ndarray: ...
 
 
 class MockMultiviewEncoder:
@@ -142,6 +141,6 @@ def embed_multiview_mips(
     torch_device: str | None = None,
 ) -> np.ndarray:
     """Return a single L2-normalised concatenated feature vector."""
-    return make_multiview_encoder(
-        backend, model_name=model_name, torch_device=torch_device
-    ).embed(mip_mu, mip_chi, mip_d)
+    return make_multiview_encoder(backend, model_name=model_name, torch_device=torch_device).embed(
+        mip_mu, mip_chi, mip_d
+    )

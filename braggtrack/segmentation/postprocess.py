@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import numpy as np
-from scipy.ndimage import binary_fill_holes, label
+from scipy.ndimage import binary_fill_holes
 
 
 def remove_small_objects(labels: np.ndarray, min_size: int) -> np.ndarray:

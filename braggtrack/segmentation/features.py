@@ -63,11 +63,13 @@ def extract_instance_table(
         czx = float(np.dot(w, dz * dx))
         cyx = float(np.dot(w, dy * dx))
 
-        cov = np.array([
-            [czz, czy, czx],
-            [czy, cyy, cyx],
-            [czx, cyx, cxx],
-        ])
+        cov = np.array(
+            [
+                [czz, czy, czx],
+                [czy, cyy, cyx],
+                [czx, cyx, cxx],
+            ]
+        )
         eigvals = np.linalg.eigvalsh(cov)
         eigvals = np.sort(eigvals)[::-1]  # descending
 

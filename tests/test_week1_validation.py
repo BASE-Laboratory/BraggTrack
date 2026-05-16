@@ -16,13 +16,13 @@ class Week1ValidationTests(unittest.TestCase):
     def test_validate_sequence_flags_missing_metadata(self) -> None:
         seq = ExperimentSequence(
             scans=(
-                ScanVolumeMeta(scan_name='scan0001', file_path=Path('a.h5'), sequence_index=1),
-                ScanVolumeMeta(scan_name='scan0002', file_path=Path('b.h5'), sequence_index=2),
+                ScanVolumeMeta(scan_name="scan0001", file_path=Path("a.h5"), sequence_index=1),
+                ScanVolumeMeta(scan_name="scan0002", file_path=Path("b.h5"), sequence_index=2),
             )
         )
         issues = validate_sequence(seq)
-        self.assertTrue(any(issue.code == 'missing_metadata' for issue in issues))
+        self.assertTrue(any(issue.code == "missing_metadata" for issue in issues))
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     unittest.main()

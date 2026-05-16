@@ -69,7 +69,7 @@ def _synth_volume_from_file(path: Path, size: int = 24) -> np.ndarray:
         amp = 10.0 + (seed_vals[(cz + cy + cx) % len(seed_vals)] % 20)
         sigma_blob = 1.5
         d2 = (zz - cz) ** 2 + (yy - cy) ** 2 + (xx - cx) ** 2
-        volume += amp * np.exp(-d2 / (2.0 * sigma_blob ** 2))
+        volume += amp * np.exp(-d2 / (2.0 * sigma_blob**2))
     return volume
 
 

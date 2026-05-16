@@ -7,7 +7,6 @@ birth/death events, and near-overlap cases so that Week 3 metrics
 
 from __future__ import annotations
 
-import math
 import random
 from typing import Any
 
@@ -64,32 +63,50 @@ def generate_crossing_scenario(
     # position_at_each_scan).  Some trajectories deliberately cross paths.
     trajectories: list[dict[str, Any]] = [
         # Persistent spots that cross in mu/chi around scan 1
-        {"true_id": 1, "start": 0, "end": n_scans - 1,
-         "positions": [(2.0 + t * 3.0, 10.0 - t * 2.0, 5.0 + t * 0.1) for t in range(n_scans)],
-         "eig": (0.5, 0.4, 0.3)},
-        {"true_id": 2, "start": 0, "end": n_scans - 1,
-         "positions": [(8.0 - t * 3.0, 4.0 + t * 2.0, 5.1 + t * 0.1) for t in range(n_scans)],
-         "eig": (0.6, 0.5, 0.2)},
+        {
+            "true_id": 1,
+            "start": 0,
+            "end": n_scans - 1,
+            "positions": [(2.0 + t * 3.0, 10.0 - t * 2.0, 5.0 + t * 0.1) for t in range(n_scans)],
+            "eig": (0.5, 0.4, 0.3),
+        },
+        {
+            "true_id": 2,
+            "start": 0,
+            "end": n_scans - 1,
+            "positions": [(8.0 - t * 3.0, 4.0 + t * 2.0, 5.1 + t * 0.1) for t in range(n_scans)],
+            "eig": (0.6, 0.5, 0.2),
+        },
         # Persistent spot, no crossing
-        {"true_id": 3, "start": 0, "end": n_scans - 1,
-         "positions": [(15.0 + t * 0.5, 15.0 + t * 0.3, 8.0 - t * 0.2) for t in range(n_scans)],
-         "eig": (0.7, 0.6, 0.5)},
+        {
+            "true_id": 3,
+            "start": 0,
+            "end": n_scans - 1,
+            "positions": [(15.0 + t * 0.5, 15.0 + t * 0.3, 8.0 - t * 0.2) for t in range(n_scans)],
+            "eig": (0.7, 0.6, 0.5),
+        },
         # Born in scan 1
-        {"true_id": 4, "start": 1, "end": n_scans - 1,
-         "positions": [(20.0, 20.0, 12.0 + t * 0.1) for t in range(n_scans)],
-         "eig": (0.4, 0.4, 0.4)},
+        {
+            "true_id": 4,
+            "start": 1,
+            "end": n_scans - 1,
+            "positions": [(20.0, 20.0, 12.0 + t * 0.1) for t in range(n_scans)],
+            "eig": (0.4, 0.4, 0.4),
+        },
         # Dies after scan 0
-        {"true_id": 5, "start": 0, "end": 0,
-         "positions": [(12.0, 3.0, 3.0)] * n_scans,
-         "eig": (0.5, 0.5, 0.5)},
+        {"true_id": 5, "start": 0, "end": 0, "positions": [(12.0, 3.0, 3.0)] * n_scans, "eig": (0.5, 0.5, 0.5)},
     ]
 
     # Add a 6th spot if we have 3+ scans — born in last scan
     if n_scans >= 3:
         trajectories.append(
-            {"true_id": 6, "start": n_scans - 1, "end": n_scans - 1,
-             "positions": [(1.0, 1.0, 1.0)] * n_scans,
-             "eig": (0.3, 0.3, 0.3)},
+            {
+                "true_id": 6,
+                "start": n_scans - 1,
+                "end": n_scans - 1,
+                "positions": [(1.0, 1.0, 1.0)] * n_scans,
+                "eig": (0.3, 0.3, 0.3),
+            },
         )
 
     scan_tables: list[list[dict]] = []
@@ -105,19 +122,23 @@ def generate_crossing_scenario(
                 chi += rng.gauss(0, 0.05)
                 d += rng.gauss(0, 0.01)
                 spot_idx = len(spots)
-                spots.append(_make_spot(
-                    label=spot_idx + 1,
-                    mu=mu,
-                    chi=chi,
-                    d=d,
-                    eig=traj["eig"],
-                    intensity=80.0 + rng.gauss(0, 5),
-                ))
-                ground_truth.append({
-                    "scan_idx": scan_idx,
-                    "spot_idx": spot_idx,
-                    "true_id": traj["true_id"],
-                })
+                spots.append(
+                    _make_spot(
+                        label=spot_idx + 1,
+                        mu=mu,
+                        chi=chi,
+                        d=d,
+                        eig=traj["eig"],
+                        intensity=80.0 + rng.gauss(0, 5),
+                    )
+                )
+                ground_truth.append(
+                    {
+                        "scan_idx": scan_idx,
+                        "spot_idx": spot_idx,
+                        "true_id": traj["true_id"],
+                    }
+                )
         scan_tables.append(spots)
 
     return scan_tables, ground_truth

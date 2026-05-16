@@ -1,6 +1,10 @@
-"""BraggTrack package.
+"""BraggTrack — semantic 4D kinematics and fracture tracking for operando diffraction."""
 
-Initial scaffolding for operando diffraction tracking workflows.
-"""
+from importlib.metadata import PackageNotFoundError, version
 
-__all__ = ["io", "segmentation", "tracking"]
+try:
+    __version__ = version("braggtrack")
+except PackageNotFoundError:
+    __version__ = "0.1.0.dev0"
+
+__all__ = ["io", "segmentation", "semantic", "tracking"]
