@@ -102,4 +102,4 @@ jobs:
             --to notebook --execute \
             --ExecutePreprocessor.timeout=600 \
             notebooks/braggtrack_demo.ipynb \
-            --output /dev/null
+            --output-dir /tmp
