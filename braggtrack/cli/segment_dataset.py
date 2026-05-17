@@ -1,4 +1,4 @@
-"""Run classical segmentation over discovered scan files and write artifacts."""
+"""Run segmentation over discovered scan files and write artifacts."""
 
 from __future__ import annotations
 
@@ -23,6 +23,7 @@ from braggtrack.segmentation import (
     relabel_sequential,
     remove_small_objects,
     segment_classical,
+    segment_dino,
 )
 
 
@@ -35,6 +36,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Dataset root with scan folders (default: data/sample_operando if present, else .)",
     )
     parser.add_argument("--outdir", default="artifacts/week2", help="Output artifact directory")
+    parser.add_argument(
+        "--method",
+        choices=["classical", "dino"],
+        default="classical",
+        help="Segmentation method: classical (LoG + watershed) or dino (DINOv3 features + HDBSCAN)",
+    )
     parser.add_argument("--blur-passes", type=int, default=1)
     parser.add_argument("--seed-separation", type=int, default=2)
     parser.add_argument("--h-value", type=float, default=0.1)
@@ -62,6 +69,27 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=15.0,
         help="Merge adjacent labels whose centroids are within this many voxels (0 disables)",
+    )
+    # DINO-specific arguments
+    parser.add_argument(
+        "--dino-backend",
+        choices=["auto", "mock", "torch"],
+        default=None,
+        help="DINO backend (default: auto-detect torch, fall back to mock)",
+    )
+    parser.add_argument(
+        "--dino-model",
+        default="facebook/dinov3-vitb16-pretrain-lvd1689m",
+        help="HuggingFace model ID for the DINO torch backend",
+    )
+    parser.add_argument("--dino-pca-components", type=int, default=16, help="PCA components for DINO feature reduction")
+    parser.add_argument("--dino-min-cluster-size", type=int, default=3, help="HDBSCAN min_cluster_size")
+    parser.add_argument("--dino-min-samples", type=int, default=2, help="HDBSCAN min_samples")
+    parser.add_argument(
+        "--dino-min-overlap",
+        type=float,
+        default=0.3,
+        help="Min overlap fraction for 3D slice stitching",
     )
     return parser
 
@@ -134,15 +162,28 @@ def main() -> int:
 
         raw_threshold = otsu_threshold(volume.ravel())
         threshold = raw_threshold * float(args.threshold_fraction)
-        result = segment_classical(
-            volume,
-            threshold=threshold,
-            blur_passes=max(1, args.blur_passes),
-            h_value=float(args.h_value),
-            min_seed_separation=max(1, args.seed_separation),
-            seed_peak_fraction=float(args.seed_peak_fraction),
-            seed_response_percentile=float(args.seed_response_percentile),
-        )
+
+        if args.method == "dino":
+            result = segment_dino(
+                volume,
+                backend=args.dino_backend,
+                model_name=args.dino_model,
+                n_components_pca=args.dino_pca_components,
+                min_cluster_size=args.dino_min_cluster_size,
+                min_samples=args.dino_min_samples,
+                threshold_fraction=float(args.threshold_fraction),
+                min_overlap_fraction=args.dino_min_overlap,
+            )
+        else:
+            result = segment_classical(
+                volume,
+                threshold=threshold,
+                blur_passes=max(1, args.blur_passes),
+                h_value=float(args.h_value),
+                min_seed_separation=max(1, args.seed_separation),
+                seed_peak_fraction=float(args.seed_peak_fraction),
+                seed_response_percentile=float(args.seed_response_percentile),
+            )
 
         labels = remove_small_objects(result.labeled_volume, min_size=max(1, args.min_size))
         binary = labels > 0
@@ -161,6 +202,7 @@ def main() -> int:
                     "scan": scan.scan_name,
                     "file": str(scan.path),
                     "source": source,
+                    "method": args.method,
                     "threshold": raw_threshold,
                     "threshold_fraction": args.threshold_fraction,
                     "effective_threshold": threshold,
