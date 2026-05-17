@@ -8,8 +8,12 @@ across beamlines and detectors without per-instrument parameter tuning.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 import numpy as np
+
+if TYPE_CHECKING:
+    from braggtrack.semantic.dino import BackendName, PatchFeatureEncoder
 
 
 @dataclass(frozen=True)
@@ -25,7 +29,7 @@ class DinoSegmentationResult:
 
 def _extract_slice_features(
     volume: np.ndarray,
-    encoder: object,
+    encoder: PatchFeatureEncoder,
     *,
     axis: int = 0,
 ) -> tuple[np.ndarray, tuple[int, int]]:
@@ -39,10 +43,15 @@ def _extract_slice_features(
     feature_maps: list[np.ndarray] = []
     for i in range(n_slices):
         slc = np.take(volume, i, axis=axis)
-        fmap = encoder.extract_patch_features(slc)  # type: ignore[union-attr]
+        fmap = encoder.extract_patch_features(slc)
         feature_maps.append(fmap)
 
-    slice_hw = (volume.shape[1] if axis == 0 else volume.shape[0], volume.shape[2] if axis != 2 else volume.shape[1])
+    if axis == 0:
+        slice_hw = (volume.shape[1], volume.shape[2])
+    elif axis == 1:
+        slice_hw = (volume.shape[0], volume.shape[2])
+    else:
+        slice_hw = (volume.shape[0], volume.shape[1])
     return np.stack(feature_maps, axis=0), slice_hw
 
 
@@ -94,15 +103,11 @@ def _upsample_labels(
     patch_size: int,
 ) -> np.ndarray:
     """Nearest-neighbor upsample patch-resolution labels to pixel resolution."""
-    h_p, w_p = patch_labels.shape
+    expanded = np.repeat(np.repeat(patch_labels, patch_size, axis=0), patch_size, axis=1)
     out = np.zeros(target_shape, dtype=np.int32)
-    for py in range(h_p):
-        for px in range(w_p):
-            y0 = py * patch_size
-            x0 = px * patch_size
-            y1 = min(y0 + patch_size, target_shape[0])
-            x1 = min(x0 + patch_size, target_shape[1])
-            out[y0:y1, x0:x1] = patch_labels[py, px]
+    h = min(expanded.shape[0], target_shape[0])
+    w = min(expanded.shape[1], target_shape[1])
+    out[:h, :w] = expanded[:h, :w]
     return out
 
 
@@ -148,6 +153,12 @@ def _stitch_slices_3d(
         if ra != rb:
             parent[rb] = ra
 
+    # Pre-compute label sizes per slice for O(1) lookup during merging.
+    slice_label_sizes: list[dict[int, int]] = []
+    for sl in global_slices:
+        unique_labels, label_counts = np.unique(sl[sl > 0], return_counts=True)
+        slice_label_sizes.append(dict(zip(unique_labels.tolist(), label_counts.tolist())))
+
     # Merge labels across adjacent slices by overlap.
     for i in range(n_slices - 1):
         sl_a = global_slices[i]
@@ -162,10 +173,10 @@ def _stitch_slices_3d(
         la = pairs_a[mask]
         lb = pairs_b[mask]
         unique_pairs, counts = np.unique(np.stack([la, lb], axis=1), axis=0, return_counts=True)
+        sizes_a = slice_label_sizes[i]
+        sizes_b = slice_label_sizes[i + 1]
         for (lid_a, lid_b), cnt in zip(unique_pairs, counts):
-            size_a = int(np.count_nonzero(sl_a == lid_a))
-            size_b = int(np.count_nonzero(sl_b == lid_b))
-            min_size = min(size_a, size_b)
+            min_size = min(sizes_a.get(int(lid_a), 0), sizes_b.get(int(lid_b), 0))
             if min_size > 0 and cnt / min_size >= min_overlap_fraction:
                 union(int(lid_a), int(lid_b))
 
@@ -190,7 +201,7 @@ def _stitch_slices_3d(
 def segment_dino(
     volume: np.ndarray,
     *,
-    backend: str | None = None,
+    backend: BackendName | None = None,
     model_name: str = "facebook/dinov3-vitb16-pretrain-lvd1689m",
     torch_device: str | None = None,
     n_components_pca: int = 16,
@@ -250,10 +261,11 @@ def segment_dino(
     labels_3d = np.where(foreground, labels_3d, 0).astype(np.int32)
 
     component_count = len(np.unique(labels_3d[labels_3d > 0]))
+    # response is empty — DINO segmentation has no LoG-equivalent response surface.
     return DinoSegmentationResult(
         threshold=threshold,
         seed_count=component_count,
         component_count=component_count,
         labeled_volume=labels_3d,
-        response=np.zeros_like(volume),
+        response=np.empty(0, dtype=np.float64),
     )

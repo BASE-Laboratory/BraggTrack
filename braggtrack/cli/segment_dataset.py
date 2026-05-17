@@ -160,9 +160,6 @@ def main() -> int:
             volume = synth_volume_from_file(scan.path)
             source = "synthetic_fallback"
 
-        raw_threshold = otsu_threshold(volume.ravel())
-        threshold = raw_threshold * float(args.threshold_fraction)
-
         if args.method == "dino":
             result = segment_dino(
                 volume,
@@ -175,6 +172,8 @@ def main() -> int:
                 min_overlap_fraction=args.dino_min_overlap,
             )
         else:
+            raw_threshold = otsu_threshold(volume.ravel())
+            threshold = raw_threshold * float(args.threshold_fraction)
             result = segment_classical(
                 volume,
                 threshold=threshold,
@@ -203,9 +202,9 @@ def main() -> int:
                     "file": str(scan.path),
                     "source": source,
                     "method": args.method,
-                    "threshold": raw_threshold,
+                    "threshold": result.threshold,
                     "threshold_fraction": args.threshold_fraction,
-                    "effective_threshold": threshold,
+                    "effective_threshold": result.threshold,
                     "merge_distance": args.merge_distance,
                     "seed_count": result.seed_count,
                     "component_count": len(table),

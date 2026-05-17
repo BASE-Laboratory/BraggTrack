@@ -1,11 +1,8 @@
 """Tests for DINO-based segmentation (mock backend, no GPU)."""
 
-import os
 import unittest
 
 import numpy as np
-
-os.environ.setdefault("BRAGGTRACK_DINO_BACKEND", "mock")
 
 from braggtrack.segmentation.dino_segment import (
     DinoSegmentationResult,
@@ -122,7 +119,7 @@ class TestSegmentDino(unittest.TestCase):
         result = segment_dino(volume, backend="mock")
         self.assertIsInstance(result, DinoSegmentationResult)
         self.assertEqual(result.labeled_volume.shape, volume.shape)
-        self.assertEqual(result.response.shape, volume.shape)
+        self.assertEqual(result.response.size, 0)
         self.assertGreater(result.threshold, 0)
 
     def test_result_field_compatible(self) -> None:
