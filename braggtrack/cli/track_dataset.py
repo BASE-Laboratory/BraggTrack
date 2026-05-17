@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 import argparse
-import csv
 import json
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 
+from braggtrack.cli._utils import load_feature_csv, write_csv
 from braggtrack.tracking import (
     GeometrySemanticCost,
     PositionShapeCost,
@@ -51,24 +51,6 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _load_feature_csv(path: Path) -> list[dict[str, Any]]:
-    """Load a Week 2 features.csv into a list of dicts with numeric types."""
-    rows: list[dict[str, Any]] = []
-    with path.open() as fh:
-        reader = csv.DictReader(fh)
-        for row in reader:
-            typed: dict[str, Any] = {}
-            for k, v in row.items():
-                try:
-                    typed[k] = int(v)
-                except ValueError:
-                    try:
-                        typed[k] = float(v)
-                    except ValueError:
-                        typed[k] = v
-            rows.append(typed)
-    return rows
-
 
 def _load_embeddings_npz(path: Path) -> dict[int, np.ndarray]:
     with np.load(path) as z:
@@ -86,18 +68,6 @@ def _merge_embeddings(rows: list[dict[str, Any]], emb: dict[int, np.ndarray]) ->
         if lid in emb:
             row["embedding"] = emb[lid]
 
-
-def _write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    if not rows:
-        with path.open("w", newline="") as fh:
-            fh.write("")
-        return
-    fieldnames = list(rows[0].keys())
-    with path.open("w", newline="") as fh:
-        writer = csv.DictWriter(fh, fieldnames=fieldnames)
-        writer.writeheader()
-        writer.writerows(rows)
 
 
 def _write_notebook(path: Path) -> None:
@@ -175,7 +145,7 @@ def main() -> int:
     for sd in scan_dirs:
         feat_path = sd / "features.csv"
         if feat_path.exists():
-            scan_tables.append(_load_feature_csv(feat_path))
+            scan_tables.append(load_feature_csv(feat_path))
             scan_names.append(sd.name)
 
     if not scan_tables:
@@ -217,7 +187,7 @@ def main() -> int:
     track_rows = tracks_to_table(G)
     for tr in track_rows:
         tr.pop("embedding", None)
-    _write_csv(outdir / "tracks.csv", track_rows)
+    write_csv(outdir / "tracks.csv", track_rows)
     (outdir / "tracking_metrics.json").write_text(json.dumps(metrics, indent=2))
 
     schema_version = "week4.v1" if args.cost_beta != 0.0 else "week3.v1"

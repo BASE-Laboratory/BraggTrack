@@ -3,13 +3,12 @@
 from __future__ import annotations
 
 import argparse
-import csv
-import hashlib
 import json
 from pathlib import Path
 
 import numpy as np
 
+from braggtrack.cli._utils import synth_volume_from_file, write_csv
 from braggtrack.io import (
     MissingH5DependencyError,
     discover_operando_scans,
@@ -53,37 +52,6 @@ def build_parser() -> argparse.ArgumentParser:
     )
     return parser
 
-
-def _synth_volume_from_file(path: Path, size: int = 24) -> np.ndarray:
-    """Generate a deterministic synthetic volume with Gaussian blobs."""
-    digest = hashlib.sha256(path.read_bytes()[:4096]).digest()
-    seed_vals = [b for b in digest[:12]]
-    volume = np.ones((size, size, size), dtype=np.float64)
-    centers = [
-        (4 + seed_vals[0] % 8, 4 + seed_vals[1] % 8, 4 + seed_vals[2] % 8),
-        (10 + seed_vals[3] % 8, 10 + seed_vals[4] % 8, 10 + seed_vals[5] % 8),
-        (6 + seed_vals[6] % 10, 6 + seed_vals[7] % 10, 6 + seed_vals[8] % 10),
-    ]
-    zz, yy, xx = np.mgrid[0:size, 0:size, 0:size]
-    for cz, cy, cx in centers:
-        amp = 10.0 + (seed_vals[(cz + cy + cx) % len(seed_vals)] % 20)
-        sigma_blob = 1.5
-        d2 = (zz - cz) ** 2 + (yy - cy) ** 2 + (xx - cx) ** 2
-        volume += amp * np.exp(-d2 / (2.0 * sigma_blob**2))
-    return volume
-
-
-def _write_csv(path: Path, rows: list[dict[str, object]]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    if not rows:
-        with path.open("w", newline="") as fh:
-            fh.write("")
-        return
-    fieldnames = list(rows[0].keys())
-    with path.open("w", newline="") as fh:
-        writer = csv.DictWriter(fh, fieldnames=fieldnames)
-        writer.writeheader()
-        writer.writerows(rows)
 
 
 def _write_notebook(path: Path) -> None:
@@ -145,13 +113,11 @@ def main() -> int:
         source = "nexus"
         try:
             volume = load_primary_volume(scan.path)
-            if not isinstance(volume, np.ndarray):
-                volume = np.asarray(volume, dtype=np.float64)
         except MissingH5DependencyError:
-            volume = _synth_volume_from_file(scan.path)
+            volume = synth_volume_from_file(scan.path)
             source = "synthetic_fallback"
         except (KeyError, ValueError):
-            volume = _synth_volume_from_file(scan.path)
+            volume = synth_volume_from_file(scan.path)
             source = "synthetic_fallback"
 
         threshold = otsu_threshold(volume.ravel())
@@ -172,7 +138,7 @@ def main() -> int:
         labels = relabel_sequential(labels)
 
         table = extract_instance_table(labels, volume)
-        _write_csv(scan_out / "features.csv", table)
+        write_csv(scan_out / "features.csv", table)
         np.savez_compressed(scan_out / "labels.npz", labels=labels.astype(np.int32, copy=False))
         (scan_out / "summary.json").write_text(
             json.dumps(
@@ -205,7 +171,7 @@ def main() -> int:
         )
 
     (outdir / "segmentation_summary.json").write_text(json.dumps(summaries, indent=2))
-    _write_csv(outdir / "segmentation_summary.csv", summaries)
+    write_csv(outdir / "segmentation_summary.csv", summaries)
     _write_notebook(outdir / "qc" / "week2_visual_qc.ipynb")
 
     print(json.dumps(summaries, indent=2))

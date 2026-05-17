@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 from pathlib import Path
 
 import numpy as np
 
+from braggtrack.cli._utils import load_feature_csv, synth_volume_from_file
 from braggtrack.io import (
     MissingH5DependencyError,
     discover_operando_scans,
@@ -39,41 +39,6 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
-def _synth_volume_from_file(path: Path, size: int = 24) -> np.ndarray:
-    digest = hashlib.sha256(path.read_bytes()[:4096]).digest()
-    seed_vals = [b for b in digest[:12]]
-    volume = np.ones((size, size, size), dtype=np.float64)
-    centers = [
-        (4 + seed_vals[0] % 8, 4 + seed_vals[1] % 8, 4 + seed_vals[2] % 8),
-        (10 + seed_vals[3] % 8, 10 + seed_vals[4] % 8, 10 + seed_vals[5] % 8),
-        (6 + seed_vals[6] % 10, 6 + seed_vals[7] % 10, 6 + seed_vals[8] % 10),
-    ]
-    zz, yy, xx = np.mgrid[0:size, 0:size, 0:size]
-    for cz, cy, cx in centers:
-        amp = 10.0 + (seed_vals[(cz + cy + cx) % len(seed_vals)] % 20)
-        sigma_blob = 1.5
-        d2 = (zz - cz) ** 2 + (yy - cy) ** 2 + (xx - cx) ** 2
-        volume += amp * np.exp(-d2 / (2.0 * sigma_blob**2))
-    return volume
-
-
-def _load_feature_rows(path: Path) -> list[dict[str, object]]:
-    import csv
-
-    rows: list[dict[str, object]] = []
-    with path.open() as fh:
-        for row in csv.DictReader(fh):
-            typed: dict[str, object] = {}
-            for k, v in row.items():
-                try:
-                    typed[k] = int(v)
-                except ValueError:
-                    try:
-                        typed[k] = float(v)
-                    except ValueError:
-                        typed[k] = v
-            rows.append(typed)
-    return rows
 
 
 def main() -> int:
@@ -87,6 +52,11 @@ def main() -> int:
     scan_by_name = {s.scan_name: s for s in scans_fs}
     summaries: list[dict[str, object]] = []
 
+    enc = make_multiview_encoder(
+        args.backend,  # type: ignore[arg-type]
+        model_name=args.model,
+    )
+
     for scan_dir in sorted(d for d in segdir.iterdir() if d.is_dir() and d.name.startswith("scan")):
         name = scan_dir.name
         feat_path = scan_dir / "features.csv"
@@ -97,7 +67,7 @@ def main() -> int:
             print(json.dumps({"error": "Missing labels.npz — re-run segment_dataset", "scan": name}))
             return 1
 
-        rows = _load_feature_rows(feat_path)
+        rows = load_feature_csv(feat_path)
         labels_full = np.load(lab_path)["labels"]
 
         scan_file = scan_by_name.get(name)
@@ -107,10 +77,8 @@ def main() -> int:
 
         try:
             volume = load_primary_volume(scan_file.path)
-            if not isinstance(volume, np.ndarray):
-                volume = np.asarray(volume, dtype=np.float64)
         except (MissingH5DependencyError, KeyError, ValueError):
-            volume = _synth_volume_from_file(scan_file.path)
+            volume = synth_volume_from_file(scan_file.path)
 
         if volume.shape != labels_full.shape:
             print(
@@ -124,11 +92,6 @@ def main() -> int:
                 )
             )
             return 1
-
-        enc = make_multiview_encoder(
-            args.backend,  # type: ignore[arg-type]
-            model_name=args.model,
-        )
 
         label_ids: list[int] = []
         vectors: list[np.ndarray] = []
