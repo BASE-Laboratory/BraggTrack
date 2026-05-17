@@ -1,3 +1,5 @@
+<img width="1774" height="887" alt="Social_banner" src="https://github.com/user-attachments/assets/4c73be10-eb60-4e6b-a0cd-4b6ac00af46b" />
+
 # BraggTrack
 
 Semantic 4D kinematics and fracture tracking for operando diffraction using foundation vision models.
