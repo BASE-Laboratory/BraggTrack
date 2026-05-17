@@ -123,7 +123,10 @@ def main() -> int:
     )
     wk4_ok = wk4_ok_cmd and isinstance(wk4_payload, dict) and wk4_payload.get("failures") == []
 
-    all_ok = unit_ok and acc_ok and smoke_ok and wk2_ok and wk3_ok and wk4_ok
+    dino_ok_cmd, dino_payload, _ = run_cmd_json([sys.executable, "scripts/check_dino_acceptance.py"], "DINO Acceptance")
+    dino_ok = dino_ok_cmd and isinstance(dino_payload, dict) and dino_payload.get("failures") == []
+
+    all_ok = unit_ok and acc_ok and smoke_ok and wk2_ok and wk3_ok and wk4_ok and dino_ok
     print("\n=== Summary ===")
     print(f"unit_tests={'PASS' if unit_ok else 'FAIL'}")
     print(f"acceptance={'PASS' if acc_ok else 'FAIL'}")
@@ -131,6 +134,7 @@ def main() -> int:
     print(f"week2_acceptance={'PASS' if wk2_ok else 'FAIL'}")
     print(f"week3_acceptance={'PASS' if wk3_ok else 'FAIL'}")
     print(f"week4_acceptance={'PASS' if wk4_ok else 'FAIL'}")
+    print(f"dino_acceptance={'PASS' if dino_ok else 'FAIL'}")
     print(f"overall={'PASS' if all_ok else 'FAIL'}")
 
     return 0 if all_ok else 1

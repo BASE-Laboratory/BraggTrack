@@ -57,10 +57,11 @@ class TestClusterFeatureMap(unittest.TestCase):
         self.assertEqual(labels.shape, (6, 6))
         self.assertGreaterEqual(len(np.unique(labels[labels > 0])), 1)
 
-    def test_tiny_input_returns_zeros(self) -> None:
+    def test_tiny_input_single_region(self) -> None:
         features = np.ones((1, 1, 4), dtype=np.float32)
         labels = _cluster_feature_map(features, n_components_pca=2)
         self.assertEqual(labels.shape, (1, 1))
+        self.assertEqual(labels[0, 0], 1)
 
 
 class TestUpsampleLabels(unittest.TestCase):

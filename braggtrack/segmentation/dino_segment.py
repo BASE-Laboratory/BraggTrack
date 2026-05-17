@@ -62,21 +62,29 @@ def _cluster_feature_map(
     from sklearn.decomposition import PCA
 
     h_p, w_p, d = features.shape
+    n_patches = h_p * w_p
     flat = features.reshape(-1, d)
 
-    n_comp = min(n_components_pca, d, flat.shape[0])
+    n_comp = min(n_components_pca, d, n_patches)
     if n_comp < 2:
-        return np.zeros((h_p, w_p), dtype=np.int32)
+        # Too few patches to cluster — assign all to a single region.
+        return np.ones((h_p, w_p), dtype=np.int32)
 
     reduced = PCA(n_components=n_comp).fit_transform(flat)
 
+    effective_min_cluster = max(2, min(min_cluster_size, n_patches // 2))
     clusterer = HDBSCAN(
-        min_cluster_size=max(2, min_cluster_size),
-        min_samples=max(1, min_samples),
+        min_cluster_size=effective_min_cluster,
+        min_samples=max(1, min(min_samples, effective_min_cluster - 1)),
     )
     raw_labels = clusterer.fit_predict(reduced)
     # HDBSCAN labels: -1 = noise, 0..K = clusters. Shift to 1-based.
     labels = np.where(raw_labels >= 0, raw_labels + 1, 0)
+
+    # If HDBSCAN assigned everything to noise, treat all patches as one region.
+    if not np.any(labels > 0):
+        return np.ones((h_p, w_p), dtype=np.int32)
+
     return labels.reshape(h_p, w_p).astype(np.int32)
 
 
