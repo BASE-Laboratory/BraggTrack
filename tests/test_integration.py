@@ -69,9 +69,7 @@ class EndToEndPipelineTest(unittest.TestCase):
         raw_thresholds = [otsu_threshold(v.ravel()) for v in cls.volumes]
         cls.smoothed = smooth_thresholds(raw_thresholds, window=5)
         cls.all_labels = [_segment(v, float(t)) for v, t in zip(cls.volumes, cls.smoothed)]
-        cls.all_features = [
-            extract_instance_table(lab, v) for lab, v in zip(cls.all_labels, cls.volumes)
-        ]
+        cls.all_features = [extract_instance_table(lab, v) for lab, v in zip(cls.all_labels, cls.volumes)]
 
     def test_discovers_three_scans(self) -> None:
         self.assertEqual(len(self.scans), 3)
@@ -91,11 +89,21 @@ class EndToEndPipelineTest(unittest.TestCase):
 
     def test_feature_tables_have_required_columns(self) -> None:
         required = {
-            "label", "voxel_count", "integrated_intensity",
-            "centroid_mu", "centroid_chi", "centroid_d",
-            "eig_1", "eig_2", "eig_3",
-            "bbox_min_z", "bbox_max_z", "bbox_min_y", "bbox_max_y",
-            "bbox_min_x", "bbox_max_x",
+            "label",
+            "voxel_count",
+            "integrated_intensity",
+            "centroid_mu",
+            "centroid_chi",
+            "centroid_d",
+            "eig_1",
+            "eig_2",
+            "eig_3",
+            "bbox_min_z",
+            "bbox_max_z",
+            "bbox_min_y",
+            "bbox_max_y",
+            "bbox_min_x",
+            "bbox_max_x",
         }
         for feats in self.all_features:
             for row in feats:

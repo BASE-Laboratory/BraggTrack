@@ -51,7 +51,6 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-
 def _load_embeddings_npz(path: Path) -> dict[int, np.ndarray]:
     with np.load(path) as z:
         labels = z["labels"]
@@ -67,7 +66,6 @@ def _merge_embeddings(rows: list[dict[str, Any]], emb: dict[int, np.ndarray]) ->
         lid = int(row["label"])
         if lid in emb:
             row["embedding"] = emb[lid]
-
 
 
 def _write_notebook(path: Path) -> None:

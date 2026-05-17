@@ -84,9 +84,15 @@ class BeamlineAdapterErrorTests(unittest.TestCase):
 class BuildTracksEdgeTests(unittest.TestCase):
     def _make_spot(self, mu: float = 0.0, chi: float = 0.0, d: float = 0.0) -> dict:
         return {
-            "label": 1, "voxel_count": 10, "integrated_intensity": 100.0,
-            "centroid_mu": mu, "centroid_chi": chi, "centroid_d": d,
-            "eig_1": 0.5, "eig_2": 0.5, "eig_3": 0.5,
+            "label": 1,
+            "voxel_count": 10,
+            "integrated_intensity": 100.0,
+            "centroid_mu": mu,
+            "centroid_chi": chi,
+            "centroid_d": d,
+            "eig_1": 0.5,
+            "eig_2": 0.5,
+            "eig_3": 0.5,
         }
 
     def test_empty_scan_tables(self) -> None:

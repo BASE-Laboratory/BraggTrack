@@ -42,9 +42,12 @@ class TestCropSpotCube(unittest.TestCase):
         lab = np.zeros((10, 10, 10), dtype=np.int32)
         lab[2:5, 3:6, 4:7] = 7
         bbox = {
-            "bbox_min_z": 2, "bbox_max_z": 4,
-            "bbox_min_y": 3, "bbox_max_y": 5,
-            "bbox_min_x": 4, "bbox_max_x": 6,
+            "bbox_min_z": 2,
+            "bbox_max_z": 4,
+            "bbox_min_y": 3,
+            "bbox_max_y": 5,
+            "bbox_min_x": 4,
+            "bbox_max_x": 6,
         }
         masked, mask = crop_spot_cube(vol, lab, 7, bbox, margin=0)
         self.assertTrue(np.all(masked[mask > 0] == 3.0))
@@ -55,9 +58,12 @@ class TestCropSpotCube(unittest.TestCase):
         labels = np.zeros((10, 10, 10), dtype=int)
         labels[0:2, 0:2, 0:2] = 1
         bbox = {
-            "bbox_min_z": 0, "bbox_max_z": 1,
-            "bbox_min_y": 0, "bbox_max_y": 1,
-            "bbox_min_x": 0, "bbox_max_x": 1,
+            "bbox_min_z": 0,
+            "bbox_max_z": 1,
+            "bbox_min_y": 0,
+            "bbox_max_y": 1,
+            "bbox_min_x": 0,
+            "bbox_max_x": 1,
         }
         masked, mask = crop_spot_cube(volume, labels, label_id=1, bbox=bbox, margin=5)
         self.assertGreater(mask.sum(), 0)
@@ -68,9 +74,12 @@ class TestCropSpotCube(unittest.TestCase):
         labels[3, 3, 3] = 1
         labels[4, 4, 4] = 2
         bbox = {
-            "bbox_min_z": 3, "bbox_max_z": 4,
-            "bbox_min_y": 3, "bbox_max_y": 4,
-            "bbox_min_x": 3, "bbox_max_x": 4,
+            "bbox_min_z": 3,
+            "bbox_max_z": 4,
+            "bbox_min_y": 3,
+            "bbox_max_y": 4,
+            "bbox_min_x": 3,
+            "bbox_max_x": 4,
         }
         masked, mask = crop_spot_cube(volume, labels, label_id=1, bbox=bbox, margin=1)
         self.assertEqual(float(mask[mask.shape[0] // 2, mask.shape[1] // 2, mask.shape[2] // 2]), 0.0)

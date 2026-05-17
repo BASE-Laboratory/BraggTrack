@@ -53,7 +53,6 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-
 def _write_notebook(path: Path) -> None:
     nb = {
         "cells": [

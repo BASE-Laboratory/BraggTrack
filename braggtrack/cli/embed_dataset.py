@@ -39,8 +39,6 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
-
-
 def main() -> int:
     args = build_parser().parse_args()
     root = resolve_dataset_root(args.root)
