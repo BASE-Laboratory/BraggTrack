@@ -159,7 +159,7 @@ def segment_classical(
     blur_passes: int = 1,
     sigma: float = 1.0,
     h_value: float = 0.1,
-    min_seed_separation: int = 1,
+    min_seed_separation: int = 2,
     seed_peak_fraction: float = 0.2,
     seed_response_percentile: float = 99.95,
 ) -> ClassicalSegmentationResult:

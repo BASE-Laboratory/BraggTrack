@@ -18,6 +18,7 @@ from braggtrack.io import (
 from braggtrack.segmentation import (
     extract_instance_table,
     fill_holes_binary,
+    merge_nearby_labels,
     otsu_threshold,
     relabel_sequential,
     remove_small_objects,
@@ -35,7 +36,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--outdir", default="artifacts/week2", help="Output artifact directory")
     parser.add_argument("--blur-passes", type=int, default=1)
-    parser.add_argument("--seed-separation", type=int, default=1)
+    parser.add_argument("--seed-separation", type=int, default=2)
     parser.add_argument("--h-value", type=float, default=0.1)
     parser.add_argument("--min-size", type=int, default=8)
     parser.add_argument(
@@ -49,6 +50,18 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=99.95,
         help="Seed must also exceed this percentile of the LoG response inside the foreground",
+    )
+    parser.add_argument(
+        "--threshold-fraction",
+        type=float,
+        default=1.0,
+        help="Multiply Otsu threshold by this fraction to capture diffuse spots (1.0 = original Otsu)",
+    )
+    parser.add_argument(
+        "--merge-distance",
+        type=float,
+        default=15.0,
+        help="Merge adjacent labels whose centroids are within this many voxels (0 disables)",
     )
     return parser
 
@@ -119,7 +132,8 @@ def main() -> int:
             volume = synth_volume_from_file(scan.path)
             source = "synthetic_fallback"
 
-        threshold = otsu_threshold(volume.ravel())
+        raw_threshold = otsu_threshold(volume.ravel())
+        threshold = raw_threshold * float(args.threshold_fraction)
         result = segment_classical(
             volume,
             threshold=threshold,
@@ -134,6 +148,8 @@ def main() -> int:
         binary = labels > 0
         binary = fill_holes_binary(binary)
         labels = np.where(binary, labels, 0)
+        if args.merge_distance > 0:
+            labels = merge_nearby_labels(labels, volume, max_centroid_distance=args.merge_distance)
         labels = relabel_sequential(labels)
 
         table = extract_instance_table(labels, volume)
@@ -145,7 +161,10 @@ def main() -> int:
                     "scan": scan.scan_name,
                     "file": str(scan.path),
                     "source": source,
-                    "threshold": threshold,
+                    "threshold": raw_threshold,
+                    "threshold_fraction": args.threshold_fraction,
+                    "effective_threshold": threshold,
+                    "merge_distance": args.merge_distance,
                     "seed_count": result.seed_count,
                     "component_count": len(table),
                     "schema_version": "week2.v1",
