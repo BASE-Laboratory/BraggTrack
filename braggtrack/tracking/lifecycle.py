@@ -60,8 +60,7 @@ def build_tracks(
     track_map: dict[int, int] = {}  # spot_idx -> track_id for current frame
     for idx, spot in enumerate(scan_tables[0]):
         nid = _node_id(0, idx)
-        G.add_node(nid, scan_idx=0, spot_idx=idx, track_id=next_track_id,
-                   event=TrackEvent.BORN, **spot)
+        G.add_node(nid, scan_idx=0, spot_idx=idx, track_id=next_track_id, event=TrackEvent.BORN, **spot)
         track_map[idx] = next_track_id
         next_track_id += 1
 
@@ -71,7 +70,10 @@ def build_tracks(
         spots_t1 = scan_tables[t + 1]
 
         matches, unmatched_t, unmatched_t1 = associate_frames(
-            spots_t, spots_t1, cost_fn=cost_fn, max_cost=max_cost,
+            spots_t,
+            spots_t1,
+            cost_fn=cost_fn,
+            max_cost=max_cost,
         )
 
         new_track_map: dict[int, int] = {}
@@ -81,9 +83,9 @@ def build_tracks(
             tid = track_map[i_t]
             nid_prev = _node_id(t, i_t)
             nid_next = _node_id(t + 1, i_t1)
-            G.add_node(nid_next, scan_idx=t + 1, spot_idx=i_t1,
-                       track_id=tid, event=TrackEvent.CONTINUED,
-                       **spots_t1[i_t1])
+            G.add_node(
+                nid_next, scan_idx=t + 1, spot_idx=i_t1, track_id=tid, event=TrackEvent.CONTINUED, **spots_t1[i_t1]
+            )
             G.add_edge(nid_prev, nid_next)
             new_track_map[i_t1] = tid
 
@@ -95,9 +97,9 @@ def build_tracks(
         # Unmatched in t+1 → BORN (new track)
         for i_t1 in unmatched_t1:
             nid = _node_id(t + 1, i_t1)
-            G.add_node(nid, scan_idx=t + 1, spot_idx=i_t1,
-                       track_id=next_track_id, event=TrackEvent.BORN,
-                       **spots_t1[i_t1])
+            G.add_node(
+                nid, scan_idx=t + 1, spot_idx=i_t1, track_id=next_track_id, event=TrackEvent.BORN, **spots_t1[i_t1]
+            )
             new_track_map[i_t1] = next_track_id
             next_track_id += 1
 

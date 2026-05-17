@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import subprocess
-import sys
 
 
 def _run(cmd: list[str]) -> subprocess.CompletedProcess[str]:

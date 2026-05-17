@@ -29,13 +29,17 @@ def main() -> int:
     if not (seg_dir / "segmentation_summary.json").exists():
         subprocess.run(
             [sys.executable, "-m", "braggtrack.cli.segment_dataset", str(DATASET_ROOT), "--outdir", str(seg_dir)],
-            check=False, capture_output=True, text=True,
+            check=False,
+            capture_output=True,
+            text=True,
         )
 
     # Step 2 — run tracking.
     proc = subprocess.run(
         [sys.executable, "-m", "braggtrack.cli.track_dataset", str(seg_dir), "--outdir", str(OUTDIR)],
-        check=False, capture_output=True, text=True,
+        check=False,
+        capture_output=True,
+        text=True,
     )
     payload = json.loads(proc.stdout) if proc.stdout.strip() else {}
 
@@ -56,8 +60,7 @@ def main() -> int:
         failures.append(f"total_tracks must be > 0, got {total_tracks}")
 
     # Check metrics are present.
-    for key in ("fragmentation_ratio", "id_switch_rate", "born_count",
-                "continued_count", "terminated_count"):
+    for key in ("fragmentation_ratio", "id_switch_rate", "born_count", "continued_count", "terminated_count"):
         if key not in payload:
             failures.append(f"Missing metric: {key}")
 

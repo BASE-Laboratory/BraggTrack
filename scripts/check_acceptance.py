@@ -18,7 +18,6 @@ if str(_REPO_ROOT) not in sys.path:
 
 from braggtrack.io import BeamlineAdapter, resolve_dataset_root, validate_sequence
 
-
 EXPECTED_SCAN_COUNT = 3
 EXPECTED_INDEXES = [1, 2, 3]
 
@@ -31,9 +30,7 @@ def main() -> int:
     failures: list[str] = []
 
     if len(sequence.scans) != EXPECTED_SCAN_COUNT:
-        failures.append(
-            f"Expected {EXPECTED_SCAN_COUNT} scans, found {len(sequence.scans)}."
-        )
+        failures.append(f"Expected {EXPECTED_SCAN_COUNT} scans, found {len(sequence.scans)}.")
 
     indexes = [scan.sequence_index for scan in sequence.scans]
     if indexes != EXPECTED_INDEXES:
@@ -42,21 +39,21 @@ def main() -> int:
     if not sequence.is_monotonic():
         failures.append("Sequence is not monotonic.")
 
-    if any(issue.level == 'error' for issue in issues):
+    if any(issue.level == "error" for issue in issues):
         failures.append("Validation returned one or more error-level issues.")
 
     report = {
-        'scan_count': len(sequence.scans),
-        'indexes': indexes,
-        'is_monotonic': sequence.is_monotonic(),
-        'error_count': sum(1 for issue in issues if issue.level == 'error'),
-        'warning_count': sum(1 for issue in issues if issue.level == 'warning'),
-        'failures': failures,
+        "scan_count": len(sequence.scans),
+        "indexes": indexes,
+        "is_monotonic": sequence.is_monotonic(),
+        "error_count": sum(1 for issue in issues if issue.level == "error"),
+        "warning_count": sum(1 for issue in issues if issue.level == "warning"),
+        "failures": failures,
     }
 
     print(json.dumps(report, indent=2))
     return 1 if failures else 0
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     raise SystemExit(main())

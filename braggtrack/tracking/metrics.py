@@ -53,12 +53,8 @@ def compute_tracking_metrics(
             terminated_count += 1
 
     total_tracks = len(tracks)
-    full_length_tracks = sum(
-        1 for obs in tracks.values() if len(obs) >= n_scans
-    )
-    fragmentation_ratio = (
-        1.0 - full_length_tracks / total_tracks if total_tracks > 0 else 0.0
-    )
+    full_length_tracks = sum(1 for obs in tracks.values() if len(obs) >= n_scans)
+    fragmentation_ratio = 1.0 - full_length_tracks / total_tracks if total_tracks > 0 else 0.0
 
     # ID-switch rate (requires ground truth).
     id_switch_count = 0

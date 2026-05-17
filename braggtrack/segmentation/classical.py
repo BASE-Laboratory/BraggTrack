@@ -33,7 +33,9 @@ def laplacian_3d(volume: np.ndarray) -> np.ndarray:
 
 
 def log_enhance_3d(
-    volume: np.ndarray, blur_passes: int = 1, sigma: float = 1.0,
+    volume: np.ndarray,
+    blur_passes: int = 1,
+    sigma: float = 1.0,
 ) -> np.ndarray:
     """LoG-like enhancement: blur then negative Laplacian."""
     smoothed = gaussian_blur_3d(volume, passes=blur_passes, sigma=sigma)

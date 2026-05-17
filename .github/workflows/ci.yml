@@ -10,8 +10,22 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install ruff
+      - name: Ruff check
+        run: ruff check braggtrack/ tests/ scripts/
+      - name: Ruff format check
+        run: ruff format --check braggtrack/ tests/ scripts/
+
   test:
     runs-on: ubuntu-latest
+    needs: lint
     strategy:
       fail-fast: false
       matrix:
@@ -37,15 +51,24 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install -e ".[notebook]"
+          python -m pip install pytest pytest-cov
 
       - name: Run pre-PR diagnostics
         run: python scripts/pre_pr_check.py
 
-      - name: Run unit tests
-        run: python -m unittest discover tests -v
+      - name: Run tests with coverage
+        run: |
+          python -m pytest tests/ -v --cov=braggtrack --cov-report=term-missing --cov-report=xml
 
       - name: Run acceptance gates
         run: python scripts/ci_report.py
+
+      - name: Upload coverage
+        if: matrix.python-version == '3.12'
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage.xml
 
   notebook:
     runs-on: ubuntu-latest
@@ -79,4 +102,4 @@ jobs:
             --to notebook --execute \
             --ExecutePreprocessor.timeout=600 \
             notebooks/braggtrack_demo.ipynb \
-            --output /dev/null
+            --output-dir /tmp

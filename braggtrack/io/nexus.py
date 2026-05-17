@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    import numpy as np
 
 
 class MissingH5DependencyError(RuntimeError):
@@ -16,9 +19,7 @@ def _require_h5py() -> Any:
 
         return h5py
     except ModuleNotFoundError as exc:
-        raise MissingH5DependencyError(
-            "h5py is required for HDF5/NeXus parsing. Install dependencies first."
-        ) from exc
+        raise MissingH5DependencyError("h5py is required for HDF5/NeXus parsing. Install dependencies first.") from exc
 
 
 def summarize_hdf5_tree(path: str | Path) -> list[tuple[str, str, tuple[int, ...] | None, str | None]]:
@@ -31,6 +32,7 @@ def summarize_hdf5_tree(path: str | Path) -> list[tuple[str, str, tuple[int, ...
     entries: list[tuple[str, str, tuple[int, ...] | None, str | None]] = []
 
     with h5py.File(path, "r") as handle:
+
         def visitor(name: str, obj: Any) -> None:
             if isinstance(obj, h5py.Group):
                 entries.append(("group", name, None, None))
@@ -82,8 +84,9 @@ def extract_scan_metadata(path: str | Path) -> dict[str, Any]:
     return metadata
 
 
-def load_primary_volume(path: str | Path, candidates: list[str] | None = None) -> list[list[list[float]]]:
+def load_primary_volume(path: str | Path, candidates: list[str] | None = None) -> np.ndarray:
     """Load a primary 3D detector volume from common NeXus dataset paths."""
+    import numpy as np
 
     h5py = _require_h5py()
     ds_candidates = candidates or [
@@ -99,6 +102,6 @@ def load_primary_volume(path: str | Path, candidates: list[str] | None = None) -
                 data = handle[key][()]
                 if getattr(data, "ndim", None) != 3:
                     raise ValueError(f"Dataset '{key}' exists but is not 3D (ndim={getattr(data, 'ndim', None)}).")
-                return data.tolist()
+                return np.asarray(data, dtype=np.float64)
 
     raise KeyError(f"No candidate 3D dataset found in file. Tried: {ds_candidates}")

@@ -16,9 +16,7 @@ from scipy.spatial.distance import cdist
 class CostFunction(Protocol):
     """Interface that any association cost must satisfy."""
 
-    def pairwise_cost_matrix(
-        self, spots_t: list[dict], spots_t1: list[dict]
-    ) -> np.ndarray:
+    def pairwise_cost_matrix(self, spots_t: list[dict], spots_t1: list[dict]) -> np.ndarray:
         """Dense ``(N, M)`` costs; ``inf`` for gated or inadmissible pairs."""
 
     def __call__(self, spot_i: dict, spot_j: dict) -> float:
@@ -59,9 +57,7 @@ class PositionShapeCost:
         self.gate_chi = gate_chi
         self.gate_d = gate_d
 
-    def pairwise_cost_matrix(
-        self, spots_t: list[dict], spots_t1: list[dict]
-    ) -> np.ndarray:
+    def pairwise_cost_matrix(self, spots_t: list[dict], spots_t1: list[dict]) -> np.ndarray:
         n, m = len(spots_t), len(spots_t1)
         if n == 0 or m == 0:
             return np.zeros((n, m), dtype=np.float64)
@@ -75,17 +71,11 @@ class PositionShapeCost:
             dtype=np.float64,
         )
         e = np.array(
-            [
-                [s.get("eig_1", 0.0), s.get("eig_2", 0.0), s.get("eig_3", 0.0)]
-                for s in spots_t
-            ],
+            [[s.get("eig_1", 0.0), s.get("eig_2", 0.0), s.get("eig_3", 0.0)] for s in spots_t],
             dtype=np.float64,
         )
         f = np.array(
-            [
-                [s.get("eig_1", 0.0), s.get("eig_2", 0.0), s.get("eig_3", 0.0)]
-                for s in spots_t1
-            ],
+            [[s.get("eig_1", 0.0), s.get("eig_2", 0.0), s.get("eig_3", 0.0)] for s in spots_t1],
             dtype=np.float64,
         )
 
@@ -109,12 +99,12 @@ class PositionShapeCost:
         if dmu > self.gate_mu or dchi > self.gate_chi or dd > self.gate_d:
             return math.inf
 
-        pos_dist2 = dmu ** 2 + dchi ** 2 + dd ** 2
+        pos_dist2 = dmu**2 + dchi**2 + dd**2
 
         deig1 = spot_i.get("eig_1", 0.0) - spot_j.get("eig_1", 0.0)
         deig2 = spot_i.get("eig_2", 0.0) - spot_j.get("eig_2", 0.0)
         deig3 = spot_i.get("eig_3", 0.0) - spot_j.get("eig_3", 0.0)
-        shape_dist2 = deig1 ** 2 + deig2 ** 2 + deig3 ** 2
+        shape_dist2 = deig1**2 + deig2**2 + deig3**2
 
         return self.position_weight * pos_dist2 + self.shape_weight * shape_dist2
 
@@ -139,9 +129,7 @@ class GeometrySemanticCost:
         self.cost_alpha = float(cost_alpha)
         self.cost_beta = float(cost_beta)
 
-    def pairwise_cost_matrix(
-        self, spots_t: list[dict], spots_t1: list[dict]
-    ) -> np.ndarray:
+    def pairwise_cost_matrix(self, spots_t: list[dict], spots_t1: list[dict]) -> np.ndarray:
         geo = self.geometry.pairwise_cost_matrix(spots_t, spots_t1)
         if self.cost_beta == 0.0:
             return self.cost_alpha * geo

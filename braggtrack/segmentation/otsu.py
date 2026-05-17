@@ -1,67 +1,24 @@
-"""Pure-Python Otsu thresholding for baseline segmentation."""
+"""Pure-Python Otsu thresholding and multi-frame threshold smoothing."""
 
 from __future__ import annotations
 
-from typing import Iterable, Sequence
+from collections.abc import Sequence
 
 import numpy as np
+from skimage.filters import threshold_otsu
 
 
-def _clamp_255(value: float, lo: float, hi: float) -> int:
-    if hi <= lo:
-        return 0
-    scaled = (value - lo) / (hi - lo)
-    if scaled < 0:
-        scaled = 0
-    if scaled > 1:
-        scaled = 1
-    return int(round(scaled * 255))
+def otsu_threshold(values) -> float:
+    """Compute Otsu threshold for a 1D sequence of intensity values.
 
-
-def otsu_threshold(values: Iterable[float]) -> float:
-    """Compute Otsu threshold for a 1D sequence of intensity values."""
-
-    data = [float(v) for v in values]
-    if not data:
+    Accepts any array-like (numpy array, list, etc.).
+    """
+    arr = np.asarray(values, dtype=np.float64).ravel()
+    if arr.size == 0:
         raise ValueError("Otsu threshold requires at least one value.")
-
-    lo = min(data)
-    hi = max(data)
-    if lo == hi:
-        return lo
-
-    hist = [0] * 256
-    for v in data:
-        hist[_clamp_255(v, lo, hi)] += 1
-
-    total = len(data)
-    sum_total = sum(i * hist[i] for i in range(256))
-
-    sum_bg = 0.0
-    weight_bg = 0
-    best_var = -1.0
-    best_idx = 0
-
-    for i in range(256):
-        weight_bg += hist[i]
-        if weight_bg == 0:
-            continue
-
-        weight_fg = total - weight_bg
-        if weight_fg == 0:
-            break
-
-        sum_bg += i * hist[i]
-        mean_bg = sum_bg / weight_bg
-        mean_fg = (sum_total - sum_bg) / weight_fg
-
-        between = weight_bg * weight_fg * (mean_bg - mean_fg) ** 2
-        if between > best_var:
-            best_var = between
-            best_idx = i
-
-    # Use bin center to avoid degenerate thresholds at exact low mode value.
-    return lo + ((best_idx + 0.5) / 255.0) * (hi - lo)
+    if arr.min() == arr.max():
+        return float(arr[0])
+    return float(threshold_otsu(arr))
 
 
 def smooth_thresholds(
@@ -116,7 +73,5 @@ def flag_outlier_frames(
     residual = np.abs(raw - smoothed)
     mad = float(np.median(residual)) if len(raw) > 1 else 0.0
     if mad == 0:
-        # MAD is zero when most frames are identical. Fall back to
-        # flagging any frame with nonzero deviation from the local median.
         return residual > 0
     return residual > mad_scale * mad

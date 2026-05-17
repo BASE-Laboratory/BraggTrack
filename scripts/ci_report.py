@@ -13,8 +13,6 @@ import unittest
 from pathlib import Path
 
 
-
-
 def _filter_suite(suite: unittest.TestSuite, skip_module: str | None) -> unittest.TestSuite:
     if skip_module is None:
         return suite
@@ -25,10 +23,12 @@ def _filter_suite(suite: unittest.TestSuite, skip_module: str | None) -> unittes
             if nested.countTestCases() > 0:
                 filtered.addTest(nested)
         else:
-            test_id = getattr(test, 'id', lambda: '')()
+            test_id = getattr(test, "id", lambda: "")()
             if skip_module not in test_id:
                 filtered.addTest(test)
     return filtered
+
+
 def run_unit_tests() -> bool:
     print("\n=== Unit Tests ===")
     suite = unittest.defaultTestLoader.discover("tests")
@@ -48,10 +48,10 @@ def run_cmd_json(cmd: list[str], label: str) -> tuple[bool, dict | list | None, 
         print(proc.stderr.strip())
 
     payload = None
-    try:
+    import contextlib
+
+    with contextlib.suppress(json.JSONDecodeError):
         payload = json.loads(proc.stdout) if proc.stdout.strip() else None
-    except json.JSONDecodeError:
-        pass
 
     ok = proc.returncode == 0
     print(f"{label.lower().replace(' ', '_')}: returncode={proc.returncode}")
@@ -82,7 +82,8 @@ def evaluate_smoke(payload: dict | None) -> bool:
         return False
     checks = {
         "method==otsu": payload.get("method") == "otsu",
-        "component_count>=1": isinstance(payload.get("component_count"), int) and payload.get("component_count", 0) >= 1,
+        "component_count>=1": isinstance(payload.get("component_count"), int)
+        and payload.get("component_count", 0) >= 1,
         "voxel_count>=1": isinstance(payload.get("voxel_count"), int) and payload.get("voxel_count", 0) >= 1,
     }
     for name, passed in checks.items():
@@ -102,16 +103,24 @@ def main() -> int:
     acc_ok_cmd, acc_payload, _ = run_cmd_json([sys.executable, "scripts/check_acceptance.py"], "Week 1 Acceptance")
     acc_ok = acc_ok_cmd and evaluate_acceptance(acc_payload if isinstance(acc_payload, dict) else None)
 
-    smoke_ok_cmd, smoke_payload, _ = run_cmd_json([sys.executable, "-m", "braggtrack.cli.segment_synthetic"], "Week 2 Smoke")
+    smoke_ok_cmd, smoke_payload, _ = run_cmd_json(
+        [sys.executable, "-m", "braggtrack.cli.segment_synthetic"], "Week 2 Smoke"
+    )
     smoke_ok = smoke_ok_cmd and evaluate_smoke(smoke_payload if isinstance(smoke_payload, dict) else None)
 
-    wk2_ok_cmd, wk2_payload, _ = run_cmd_json([sys.executable, "scripts/check_week2_acceptance.py"], "Week 2 Acceptance")
+    wk2_ok_cmd, wk2_payload, _ = run_cmd_json(
+        [sys.executable, "scripts/check_week2_acceptance.py"], "Week 2 Acceptance"
+    )
     wk2_ok = wk2_ok_cmd and isinstance(wk2_payload, dict) and wk2_payload.get("failures") == []
 
-    wk3_ok_cmd, wk3_payload, _ = run_cmd_json([sys.executable, "scripts/check_week3_acceptance.py"], "Week 3 Acceptance")
+    wk3_ok_cmd, wk3_payload, _ = run_cmd_json(
+        [sys.executable, "scripts/check_week3_acceptance.py"], "Week 3 Acceptance"
+    )
     wk3_ok = wk3_ok_cmd and isinstance(wk3_payload, dict) and wk3_payload.get("failures") == []
 
-    wk4_ok_cmd, wk4_payload, _ = run_cmd_json([sys.executable, "scripts/check_week4_acceptance.py"], "Week 4 Acceptance")
+    wk4_ok_cmd, wk4_payload, _ = run_cmd_json(
+        [sys.executable, "scripts/check_week4_acceptance.py"], "Week 4 Acceptance"
+    )
     wk4_ok = wk4_ok_cmd and isinstance(wk4_payload, dict) and wk4_payload.get("failures") == []
 
     all_ok = unit_ok and acc_ok and smoke_ok and wk2_ok and wk3_ok and wk4_ok

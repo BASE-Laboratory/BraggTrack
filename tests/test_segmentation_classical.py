@@ -35,8 +35,9 @@ class ClassicalSegmentationTests(unittest.TestCase):
         volume = np.ones((size, size, size))
         for z, y, x in [(2, 2, 2), (2, 2, 3), (7, 7, 7), (7, 7, 6)]:
             volume[z, y, x] = 25.0
-        result = segment_classical(volume, threshold=0.01, blur_passes=1, h_value=0.0, min_seed_separation=1,
-                                   seed_response_percentile=99.5)
+        result = segment_classical(
+            volume, threshold=0.01, blur_passes=1, h_value=0.0, min_seed_separation=1, seed_response_percentile=99.5
+        )
         self.assertGreaterEqual(result.seed_count, 2)
         self.assertGreaterEqual(result.component_count, 2)
 
@@ -48,9 +49,7 @@ class ClassicalSegmentationTests(unittest.TestCase):
         volume = rng.normal(loc=100.0, scale=5.0, size=(30, 30, 30))
         zz, yy, xx = np.mgrid[0:30, 0:30, 0:30]
         for cz, cy, cx in [(8, 8, 8), (22, 22, 22)]:
-            volume += 200.0 * np.exp(
-                -((zz - cz) ** 2 + (yy - cy) ** 2 + (xx - cx) ** 2) / (2.0 * 3.0 ** 2)
-            )
+            volume += 200.0 * np.exp(-((zz - cz) ** 2 + (yy - cy) ** 2 + (xx - cx) ** 2) / (2.0 * 3.0**2))
 
         thr = otsu_threshold(volume.ravel())
         result = segment_classical(volume, threshold=thr, seed_response_percentile=99.5)
@@ -84,5 +83,5 @@ class ClassicalSegmentationTests(unittest.TestCase):
         self.assertEqual(int(labels[2, 2, 2]), 1)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     unittest.main()
