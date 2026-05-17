@@ -11,10 +11,9 @@ from braggtrack.io.paths import default_dataset_root, resolve_dataset_root, samp
 
 class SampleOperandoRootTests(unittest.TestCase):
     def test_env_var_override(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            with patch.dict(os.environ, {"BRAGGTRACK_DATA_ROOT": tmpdir}):
-                result = sample_operando_root()
-                self.assertEqual(result, Path(tmpdir))
+        with tempfile.TemporaryDirectory() as tmpdir, patch.dict(os.environ, {"BRAGGTRACK_DATA_ROOT": tmpdir}):
+            result = sample_operando_root()
+            self.assertEqual(result, Path(tmpdir))
 
     def test_env_var_nonexistent_falls_back(self) -> None:
         with patch.dict(os.environ, {"BRAGGTRACK_DATA_ROOT": "/nonexistent/path/xyz"}):

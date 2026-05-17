@@ -8,7 +8,6 @@ from braggtrack.io.beamline import BeamlineAdapter
 from braggtrack.segmentation import otsu_threshold, segment_volume, smooth_thresholds
 from braggtrack.segmentation.classical import segment_classical
 from braggtrack.segmentation.features import extract_instance_table
-from braggtrack.segmentation.postprocess import fill_holes_binary, relabel_sequential
 from braggtrack.semantic import orthogonal_mips
 from braggtrack.tracking import PositionShapeCost, build_tracks
 

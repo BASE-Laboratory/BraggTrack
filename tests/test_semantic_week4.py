@@ -6,9 +6,8 @@ import unittest
 import numpy as np
 
 from braggtrack.semantic import crop_spot_cube, embed_multiview_mips, make_multiview_encoder, orthogonal_mips
+from braggtrack.tracking import GeometrySemanticCost, PositionShapeCost
 from braggtrack.tracking.assignment import associate_frames
-from braggtrack.tracking.cost import GeometrySemanticCost, PositionShapeCost
-
 
 # --- Orthogonal MIPs ---
 

@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    import numpy as np
 
 
 class MissingH5DependencyError(RuntimeError):
@@ -81,7 +84,7 @@ def extract_scan_metadata(path: str | Path) -> dict[str, Any]:
     return metadata
 
 
-def load_primary_volume(path: str | Path, candidates: list[str] | None = None) -> "np.ndarray":
+def load_primary_volume(path: str | Path, candidates: list[str] | None = None) -> np.ndarray:
     """Load a primary 3D detector volume from common NeXus dataset paths."""
     import numpy as np
 

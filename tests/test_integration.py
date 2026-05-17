@@ -70,7 +70,7 @@ class EndToEndPipelineTest(unittest.TestCase):
         cls.smoothed = smooth_thresholds(raw_thresholds, window=5)
         cls.all_labels = [_segment(v, float(t)) for v, t in zip(cls.volumes, cls.smoothed)]
         cls.all_features = [
-            extract_instance_table(l, v) for l, v in zip(cls.all_labels, cls.volumes)
+            extract_instance_table(lab, v) for lab, v in zip(cls.all_labels, cls.volumes)
         ]
 
     def test_discovers_three_scans(self) -> None:
@@ -135,11 +135,11 @@ class EndToEndPipelineTest(unittest.TestCase):
     def test_semantic_embedding_and_tracking(self) -> None:
         encoder = make_multiview_encoder("mock")
         enriched = []
-        for v, l, feats in zip(self.volumes, self.all_labels, self.all_features):
+        for v, lab, feats in zip(self.volumes, self.all_labels, self.all_features):
             enriched_scan = []
             for row in feats:
                 row_copy = dict(row)
-                masked, _ = crop_spot_cube(v, l, int(row["label"]), row, margin=3)
+                masked, _ = crop_spot_cube(v, lab, int(row["label"]), row, margin=3)
                 m_mu, m_chi, m_d = orthogonal_mips(masked)
                 row_copy["embedding"] = encoder.embed(m_mu, m_chi, m_d)
                 enriched_scan.append(row_copy)
@@ -155,9 +155,9 @@ class EndToEndPipelineTest(unittest.TestCase):
 
     def test_embeddings_are_unit_norm(self) -> None:
         encoder = make_multiview_encoder("mock")
-        for v, l, feats in zip(self.volumes, self.all_labels, self.all_features):
+        for v, lab, feats in zip(self.volumes, self.all_labels, self.all_features):
             for row in feats[:5]:
-                masked, _ = crop_spot_cube(v, l, int(row["label"]), row, margin=3)
+                masked, _ = crop_spot_cube(v, lab, int(row["label"]), row, margin=3)
                 m_mu, m_chi, m_d = orthogonal_mips(masked)
                 vec = encoder.embed(m_mu, m_chi, m_d)
                 self.assertAlmostEqual(float(np.linalg.norm(vec)), 1.0, places=4)

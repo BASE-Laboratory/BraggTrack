@@ -12,7 +12,7 @@ from braggtrack.segmentation import (
     remove_small_objects,
     smooth_thresholds,
 )
-from braggtrack.semantic import make_multiview_encoder, orthogonal_mips
+from braggtrack.semantic import make_multiview_encoder
 
 
 class RelabelInvariants(unittest.TestCase):
