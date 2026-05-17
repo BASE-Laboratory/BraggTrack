@@ -1,4 +1,4 @@
-"""Week 3 acceptance checks for tracking artifacts.
+"""Tracking acceptance checks.
 
 Acceptance criteria:
   1. Tracks are generated across all three scans.
@@ -19,13 +19,13 @@ if str(_REPO_ROOT) not in sys.path:
 
 from braggtrack.io import resolve_dataset_root
 
-OUTDIR = Path("artifacts/week3")
+OUTDIR = Path("artifacts/tracking")
 DATASET_ROOT = resolve_dataset_root(None)
 
 
 def main() -> int:
-    # Step 1 — ensure segmentation artifacts exist (run Week 2 if needed).
-    seg_dir = Path("artifacts/week2")
+    # Step 1 — ensure segmentation artifacts exist.
+    seg_dir = Path("artifacts/segmentation")
     if not (seg_dir / "segmentation_summary.json").exists():
         subprocess.run(
             [sys.executable, "-m", "braggtrack.cli.segment_dataset", str(DATASET_ROOT), "--outdir", str(seg_dir)],
@@ -70,14 +70,14 @@ def main() -> int:
             failures.append(f"Missing artifact: {fname}")
 
     # Check schema version.
-    if payload.get("schema_version") != "week3.v1":
+    if payload.get("schema_version") != "tracking.v1":
         failures.append(f"schema_version mismatch: {payload.get('schema_version')}")
 
     report = {
         "n_scans": n_scans,
         "total_tracks": total_tracks,
         "metrics_present": all(k in payload for k in ("fragmentation_ratio", "id_switch_rate")),
-        "schema_consistent": payload.get("schema_version") == "week3.v1",
+        "schema_consistent": payload.get("schema_version") == "tracking.v1",
         "failures": failures,
     }
     print(json.dumps(report, indent=2))

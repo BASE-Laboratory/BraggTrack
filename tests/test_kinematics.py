@@ -3,6 +3,7 @@
 import unittest
 
 import numpy as np
+from conftest import make_spot as _spot
 
 from braggtrack.tracking.cost import PositionShapeCost
 from braggtrack.tracking.kinematics import (
@@ -11,27 +12,6 @@ from braggtrack.tracking.kinematics import (
     summarize_kinematics,
 )
 from braggtrack.tracking.lifecycle import build_tracks, tracks_to_table
-
-
-def _spot(
-    mu: float,
-    chi: float,
-    d: float,
-    intensity: float = 100.0,
-    voxels: int = 10,
-    eig: tuple[float, float, float] = (0.5, 0.5, 0.5),
-) -> dict:
-    return {
-        "label": 1,
-        "voxel_count": voxels,
-        "integrated_intensity": intensity,
-        "centroid_mu": mu,
-        "centroid_chi": chi,
-        "centroid_d": d,
-        "eig_1": eig[0],
-        "eig_2": eig[1],
-        "eig_3": eig[2],
-    }
 
 
 def _build_table(scan_tables: list[list[dict]]) -> list[dict]:

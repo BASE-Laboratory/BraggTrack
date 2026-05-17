@@ -50,7 +50,7 @@ def main() -> int:
         scan = row.get("scan", "?")
         if row.get("component_count", 0) <= 0:
             failures.append(f"{scan}: component_count must be > 0")
-        if row.get("schema_version") != "week2.v1":
+        if row.get("schema_version") != "segmentation.v1":
             failures.append(f"{scan}: schema_version mismatch")
 
     summary_csv = OUTDIR / "segmentation_summary.csv"
@@ -79,7 +79,7 @@ def main() -> int:
         "method": "dino",
         "scan_count": len(payload),
         "non_empty_components": sum(1 for r in payload if r.get("component_count", 0) > 0),
-        "schema_consistent": all(r.get("schema_version") == "week2.v1" for r in payload),
+        "schema_consistent": all(r.get("schema_version") == "segmentation.v1" for r in payload),
         "failures": failures,
     }
     print(json.dumps(report, indent=2))

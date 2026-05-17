@@ -1,4 +1,4 @@
-"""Classical 3D segmentation building blocks for Week 2."""
+"""Classical 3D segmentation building blocks (LoG + watershed)."""
 
 from __future__ import annotations
 

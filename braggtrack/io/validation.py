@@ -1,4 +1,4 @@
-"""Dataset validation for Week 1 data-contract checks."""
+"""Dataset validation and data-contract checks."""
 
 from __future__ import annotations
 

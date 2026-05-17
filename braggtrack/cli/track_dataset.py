@@ -1,4 +1,4 @@
-"""Run physics-only tracking across segmented scan feature tables."""
+"""Run tracking across segmented scan feature tables."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from typing import Any
 
 import numpy as np
 
-from braggtrack.cli._utils import load_feature_csv, write_csv
+from braggtrack.cli._utils import load_feature_csv, write_csv, write_qc_notebook
 from braggtrack.tracking import (
     GeometrySemanticCost,
     PositionShapeCost,
@@ -22,9 +22,9 @@ from braggtrack.tracking import (
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "indir", nargs="?", default="artifacts/week2", help="Directory with per-scan feature CSVs (Week 2 output)"
+        "root", nargs="?", default="artifacts/segmentation", help="Directory with per-scan feature CSVs"
     )
-    parser.add_argument("--outdir", default="artifacts/week3", help="Output artifact directory")
+    parser.add_argument("--outdir", default="artifacts/tracking", help="Output artifact directory")
     parser.add_argument("--position-weight", type=float, default=1.0)
     parser.add_argument("--shape-weight", type=float, default=0.5)
     parser.add_argument("--gate-mu", type=float, default=float("inf"))
@@ -34,7 +34,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--embedding-dir",
         default=None,
-        help="Week 4 root with scanXXXX/embeddings.npz (from embed_dataset)",
+        help="Embedding root with scanXXXX/embeddings.npz (from embed_dataset)",
     )
     parser.add_argument(
         "--cost-alpha",
@@ -68,71 +68,47 @@ def _merge_embeddings(rows: list[dict[str, Any]], emb: dict[int, np.ndarray]) ->
             row["embedding"] = emb[lid]
 
 
-def _write_notebook(path: Path) -> None:
-    nb = {
-        "cells": [
-            {
-                "cell_type": "markdown",
-                "metadata": {},
-                "source": [
-                    "# Week 3 Tracking QC\n",
-                    "Visualises spot trajectories across scans and highlights near-overlap cases.\n",
-                ],
-            },
-            {
-                "cell_type": "code",
-                "execution_count": None,
-                "metadata": {},
-                "outputs": [],
-                "source": [
-                    "import csv, json\n",
-                    "from pathlib import Path\n",
-                    "import matplotlib.pyplot as plt\n",
-                    "\n",
-                    "root = Path('artifacts/week3')\n",
-                    "tracks = list(csv.DictReader((root / 'tracks.csv').open()))\n",
-                    "\n",
-                    "# Group by track_id\n",
-                    "by_track = {}\n",
-                    "for r in tracks:\n",
-                    "    tid = int(r['track_id'])\n",
-                    "    by_track.setdefault(tid, []).append(r)\n",
-                    "\n",
-                    "fig, axes = plt.subplots(1, 3, figsize=(15, 5))\n",
-                    "for tid, obs in sorted(by_track.items()):\n",
-                    "    scans = [int(r['scan_idx']) for r in obs]\n",
-                    "    mus = [float(r['centroid_mu']) for r in obs]\n",
-                    "    chis = [float(r['centroid_chi']) for r in obs]\n",
-                    "    ds = [float(r['centroid_d']) for r in obs]\n",
-                    "    axes[0].plot(scans, mus, 'o-', label=f'T{tid}')\n",
-                    "    axes[1].plot(scans, chis, 'o-', label=f'T{tid}')\n",
-                    "    axes[2].plot(scans, ds, 'o-', label=f'T{tid}')\n",
-                    "\n",
-                    "for ax, lbl in zip(axes, ['centroid_mu', 'centroid_chi', 'centroid_d']):\n",
-                    "    ax.set_xlabel('Scan index')\n",
-                    "    ax.set_ylabel(lbl)\n",
-                    "    ax.legend(fontsize=7)\n",
-                    "plt.tight_layout()\n",
-                    "plt.show()\n",
-                    "\n",
-                    "metrics = json.loads((root / 'tracking_metrics.json').read_text())\n",
-                    "print('Tracking metrics:')\n",
-                    "for k, v in metrics.items():\n",
-                    "    print(f'  {k}: {v}')\n",
-                ],
-            },
-        ],
-        "metadata": {"kernelspec": {"display_name": "Python 3", "language": "python", "name": "python3"}},
-        "nbformat": 4,
-        "nbformat_minor": 5,
-    }
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(nb, indent=2))
+_TRACKING_QC_CODE = [
+    "import csv, json\n",
+    "from pathlib import Path\n",
+    "import matplotlib.pyplot as plt\n",
+    "\n",
+    "root = Path('artifacts/tracking')\n",
+    "tracks = list(csv.DictReader((root / 'tracks.csv').open()))\n",
+    "\n",
+    "# Group by track_id\n",
+    "by_track = {}\n",
+    "for r in tracks:\n",
+    "    tid = int(r['track_id'])\n",
+    "    by_track.setdefault(tid, []).append(r)\n",
+    "\n",
+    "fig, axes = plt.subplots(1, 3, figsize=(15, 5))\n",
+    "for tid, obs in sorted(by_track.items()):\n",
+    "    scans = [int(r['scan_idx']) for r in obs]\n",
+    "    mus = [float(r['centroid_mu']) for r in obs]\n",
+    "    chis = [float(r['centroid_chi']) for r in obs]\n",
+    "    ds = [float(r['centroid_d']) for r in obs]\n",
+    "    axes[0].plot(scans, mus, 'o-', label=f'T{tid}')\n",
+    "    axes[1].plot(scans, chis, 'o-', label=f'T{tid}')\n",
+    "    axes[2].plot(scans, ds, 'o-', label=f'T{tid}')\n",
+    "\n",
+    "for ax, lbl in zip(axes, ['centroid_mu', 'centroid_chi', 'centroid_d']):\n",
+    "    ax.set_xlabel('Scan index')\n",
+    "    ax.set_ylabel(lbl)\n",
+    "    ax.legend(fontsize=7)\n",
+    "plt.tight_layout()\n",
+    "plt.show()\n",
+    "\n",
+    "metrics = json.loads((root / 'tracking_metrics.json').read_text())\n",
+    "print('Tracking metrics:')\n",
+    "for k, v in metrics.items():\n",
+    "    print(f'  {k}: {v}')\n",
+]
 
 
 def main() -> int:
     args = build_parser().parse_args()
-    indir = Path(args.indir)
+    indir = Path(args.root)
     outdir = Path(args.outdir)
     outdir.mkdir(parents=True, exist_ok=True)
 
@@ -188,7 +164,7 @@ def main() -> int:
     write_csv(outdir / "tracks.csv", track_rows)
     (outdir / "tracking_metrics.json").write_text(json.dumps(metrics, indent=2))
 
-    schema_version = "week4.v1" if args.cost_beta != 0.0 else "week3.v1"
+    schema_version = "tracking_semantic.v1" if args.cost_beta != 0.0 else "tracking.v1"
     summary = {
         "scan_names": scan_names,
         "n_scans": len(scan_tables),
@@ -200,7 +176,7 @@ def main() -> int:
         "embedding_dir": str(emb_root) if emb_root else None,
     }
     (outdir / "tracking_summary.json").write_text(json.dumps(summary, indent=2))
-    _write_notebook(outdir / "qc" / "week3_tracking_qc.ipynb")
+    write_qc_notebook(outdir / "qc" / "tracking_qc.ipynb", title="Tracking QC", code_source=_TRACKING_QC_CODE)
 
     print(json.dumps(summary, indent=2))
     return 0

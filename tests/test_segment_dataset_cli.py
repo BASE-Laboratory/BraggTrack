@@ -11,9 +11,9 @@ from braggtrack.io import sample_operando_root
 
 
 class SegmentDatasetCliTests(unittest.TestCase):
-    def test_segment_dataset_writes_week2_artifacts(self) -> None:
+    def test_segment_dataset_writes_artifacts(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
-            outdir = Path(tmpdir) / "week2"
+            outdir = Path(tmpdir) / "segmentation"
             proc = subprocess.run(
                 [
                     sys.executable,

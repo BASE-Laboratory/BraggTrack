@@ -4,18 +4,19 @@ import sys
 import unittest
 
 
-class Week2AcceptanceTests(unittest.TestCase):
-    def test_week2_acceptance_script(self) -> None:
+class TestTrackingAcceptance(unittest.TestCase):
+    def test_tracking_acceptance_script(self) -> None:
         proc = subprocess.run(
-            [sys.executable, "scripts/check_week2_acceptance.py"],
+            [sys.executable, "scripts/check_tracking_acceptance.py"],
             check=False,
             capture_output=True,
             text=True,
         )
         self.assertEqual(proc.returncode, 0, msg=proc.stdout + proc.stderr)
         payload = json.loads(proc.stdout)
-        self.assertEqual(payload["scan_count"], 3)
-        self.assertEqual(payload["non_empty_components"], 3)
+        self.assertEqual(payload["n_scans"], 3)
+        self.assertGreater(payload["total_tracks"], 0)
+        self.assertTrue(payload["metrics_present"])
         self.assertEqual(payload["failures"], [])
 
 

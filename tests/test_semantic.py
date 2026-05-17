@@ -1,4 +1,4 @@
-"""Week 4 semantic MIPs, encoder, and association cost tests."""
+"""Semantic MIPs, encoder, and association cost tests."""
 
 import math
 import unittest

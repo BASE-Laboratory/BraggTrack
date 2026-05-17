@@ -1,4 +1,4 @@
-"""Simple segmentation pipeline with Otsu baseline for Week 2."""
+"""Simple segmentation pipeline with Otsu thresholding baseline."""
 
 from __future__ import annotations
 

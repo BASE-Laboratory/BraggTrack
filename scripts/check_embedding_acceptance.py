@@ -1,4 +1,4 @@
-"""Week 4 acceptance: segmentation labels, mock embeddings, semantic tracking."""
+"""Embedding acceptance: segmentation labels, mock embeddings, semantic tracking."""
 
 from __future__ import annotations
 
@@ -14,10 +14,10 @@ if str(_REPO_ROOT) not in sys.path:
 
 from braggtrack.io import resolve_dataset_root
 
-OUT_EMB = Path("artifacts/week4")
+OUT_EMB = Path("artifacts/embedding")
 DATASET_ROOT = resolve_dataset_root(None)
-OUT_TRACK = Path("artifacts/week4_track")
-SEG = Path("artifacts/week2")
+OUT_TRACK = Path("artifacts/tracking_semantic")
+SEG = Path("artifacts/segmentation")
 
 
 def main() -> int:
@@ -85,8 +85,8 @@ def main() -> int:
     if payload.get("n_scans") != 3:
         failures.append(f"Expected 3 scans, got {payload.get('n_scans')}")
 
-    if payload.get("schema_version") != "week4.v1":
-        failures.append(f"schema_version expected week4.v1, got {payload.get('schema_version')}")
+    if payload.get("schema_version") != "tracking_semantic.v1":
+        failures.append(f"schema_version expected tracking_semantic.v1, got {payload.get('schema_version')}")
 
     for fname in ("tracks.csv", "tracking_metrics.json", "tracking_summary.json"):
         if not (OUT_TRACK / fname).exists():

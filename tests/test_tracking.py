@@ -1,29 +1,16 @@
-"""Unit tests for the Week 3 tracking module."""
+"""Unit tests for the tracking module."""
 
 import math
 import unittest
 
 import numpy as np
+from conftest import make_spot as _spot
 
 from braggtrack.tracking.assignment import associate_frames
 from braggtrack.tracking.cost import PositionShapeCost
 from braggtrack.tracking.lifecycle import TrackEvent, build_tracks, tracks_to_table
 from braggtrack.tracking.metrics import compute_tracking_metrics
 from braggtrack.tracking.synthetic import generate_crossing_scenario
-
-
-def _spot(mu: float, chi: float, d: float, eig: tuple[float, float, float] = (0.5, 0.5, 0.5)) -> dict:
-    return {
-        "label": 1,
-        "voxel_count": 10,
-        "integrated_intensity": 100.0,
-        "centroid_mu": mu,
-        "centroid_chi": chi,
-        "centroid_d": d,
-        "eig_1": eig[0],
-        "eig_2": eig[1],
-        "eig_3": eig[2],
-    }
 
 
 class TestPositionShapeCost(unittest.TestCase):

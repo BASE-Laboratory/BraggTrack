@@ -1,4 +1,4 @@
-"""Week 4 multi-view semantic features (orthogonal MIPs + frozen ViT embeddings)."""
+"""Multi-view semantic features (orthogonal MIPs + frozen ViT embeddings)."""
 
 from .dino import embed_multiview_mips, make_multiview_encoder, make_patch_encoder
 from .mips import crop_spot_cube, orthogonal_mips

@@ -28,11 +28,11 @@ Scenario (5 scans, 4 grains well-separated so tracking is unambiguous):
 import unittest
 
 import numpy as np
+from conftest import make_spot
 
 from braggtrack.tracking.cost import PositionShapeCost
 from braggtrack.tracking.kinematics import compute_grain_kinematics, summarize_kinematics
 from braggtrack.tracking.lifecycle import build_tracks, tracks_to_table
-
 
 N_SCANS = 5
 
@@ -45,17 +45,7 @@ def _spot(
     voxels: int = 10,
     eig: tuple[float, float, float] = (1.0, 1.0, 1.0),
 ) -> dict:
-    return {
-        "label": 1,
-        "voxel_count": voxels,
-        "integrated_intensity": intensity,
-        "centroid_mu": mu,
-        "centroid_chi": chi,
-        "centroid_d": d,
-        "eig_1": eig[0],
-        "eig_2": eig[1],
-        "eig_3": eig[2],
-    }
+    return make_spot(mu, chi, d, intensity=intensity, voxels=voxels, eig=eig)
 
 
 def _build_scenario() -> list[list[dict]]:
@@ -81,9 +71,7 @@ def _build_scenario() -> list[list[dict]]:
         if i >= 2:
             intensity_d = 50.0 + 50.0 * (i - 2)
             d_d = 25.0 * (1.0 + 0.002 * (i - 2))
-            frame.append(
-                _spot(30.0, 70.0, d_d, intensity=intensity_d, voxels=30, eig=(3.0, 2.0, 1.0))
-            )
+            frame.append(_spot(30.0, 70.0, d_d, intensity=intensity_d, voxels=30, eig=(3.0, 2.0, 1.0)))
 
         scans.append(frame)
 

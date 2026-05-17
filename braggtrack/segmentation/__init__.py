@@ -1,4 +1,4 @@
-"""Segmentation utilities for Week 2 baselines."""
+"""Classical and DINO-based 3D segmentation of diffraction spots."""
 
 from .classical import (
     ClassicalSegmentationResult,

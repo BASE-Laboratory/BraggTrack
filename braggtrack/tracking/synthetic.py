@@ -1,7 +1,7 @@
 """Synthetic spot-table generator for testing tracking with known ground truth.
 
 Produces multi-frame scenarios with deliberate crossing trajectories,
-birth/death events, and near-overlap cases so that Week 3 metrics
+birth/death events, and near-overlap cases so that tracking metrics
 (ID-switch rate, fragmentation) are meaningful even without real data.
 """
 

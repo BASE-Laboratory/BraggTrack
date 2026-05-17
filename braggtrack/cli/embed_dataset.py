@@ -1,4 +1,4 @@
-"""Compute Week 4 multi-view MIP embeddings for segmented spots."""
+"""Compute multi-view MIP embeddings for segmented spots."""
 
 from __future__ import annotations
 
@@ -26,8 +26,10 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Dataset root with scan folders (default: data/sample_operando if present, else .)",
     )
-    p.add_argument("--segdir", default="artifacts/week2", help="Segmentation output with features.csv + labels.npz")
-    p.add_argument("--outdir", default="artifacts/week4", help="Embedding output root")
+    p.add_argument(
+        "--segdir", default="artifacts/segmentation", help="Segmentation output with features.csv + labels.npz"
+    )
+    p.add_argument("--outdir", default="artifacts/embedding", help="Embedding output root")
     p.add_argument("--margin", type=int, default=2, help="Voxel padding around each spot bbox")
     p.add_argument(
         "--backend",
@@ -122,7 +124,7 @@ def main() -> int:
             "dim": dim,
             "backend": args.backend,
             "model": args.model if args.backend == "torch" else "mock-hash",
-            "schema_version": "week4.v1",
+            "schema_version": "embedding.v1",
         }
         (scan_out / "embedding_manifest.json").write_text(json.dumps(manifest, indent=2))
         summaries.append({**manifest, "embeddings": str(scan_out / "embeddings.npz")})

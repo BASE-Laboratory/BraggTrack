@@ -100,40 +100,40 @@ def main() -> int:
 
     unit_ok = run_unit_tests()
 
-    acc_ok_cmd, acc_payload, _ = run_cmd_json([sys.executable, "scripts/check_acceptance.py"], "Week 1 Acceptance")
+    acc_ok_cmd, acc_payload, _ = run_cmd_json([sys.executable, "scripts/check_io_acceptance.py"], "IO Acceptance")
     acc_ok = acc_ok_cmd and evaluate_acceptance(acc_payload if isinstance(acc_payload, dict) else None)
 
     smoke_ok_cmd, smoke_payload, _ = run_cmd_json(
-        [sys.executable, "-m", "braggtrack.cli.segment_synthetic"], "Week 2 Smoke"
+        [sys.executable, "-m", "braggtrack.cli.segment_synthetic"], "Segmentation Smoke"
     )
     smoke_ok = smoke_ok_cmd and evaluate_smoke(smoke_payload if isinstance(smoke_payload, dict) else None)
 
-    wk2_ok_cmd, wk2_payload, _ = run_cmd_json(
-        [sys.executable, "scripts/check_week2_acceptance.py"], "Week 2 Acceptance"
+    seg_ok_cmd, seg_payload, _ = run_cmd_json(
+        [sys.executable, "scripts/check_segmentation_acceptance.py"], "Segmentation Acceptance"
     )
-    wk2_ok = wk2_ok_cmd and isinstance(wk2_payload, dict) and wk2_payload.get("failures") == []
+    seg_ok = seg_ok_cmd and isinstance(seg_payload, dict) and seg_payload.get("failures") == []
 
-    wk3_ok_cmd, wk3_payload, _ = run_cmd_json(
-        [sys.executable, "scripts/check_week3_acceptance.py"], "Week 3 Acceptance"
+    trk_ok_cmd, trk_payload, _ = run_cmd_json(
+        [sys.executable, "scripts/check_tracking_acceptance.py"], "Tracking Acceptance"
     )
-    wk3_ok = wk3_ok_cmd and isinstance(wk3_payload, dict) and wk3_payload.get("failures") == []
+    trk_ok = trk_ok_cmd and isinstance(trk_payload, dict) and trk_payload.get("failures") == []
 
-    wk4_ok_cmd, wk4_payload, _ = run_cmd_json(
-        [sys.executable, "scripts/check_week4_acceptance.py"], "Week 4 Acceptance"
+    emb_ok_cmd, emb_payload, _ = run_cmd_json(
+        [sys.executable, "scripts/check_embedding_acceptance.py"], "Embedding Acceptance"
     )
-    wk4_ok = wk4_ok_cmd and isinstance(wk4_payload, dict) and wk4_payload.get("failures") == []
+    emb_ok = emb_ok_cmd and isinstance(emb_payload, dict) and emb_payload.get("failures") == []
 
     dino_ok_cmd, dino_payload, _ = run_cmd_json([sys.executable, "scripts/check_dino_acceptance.py"], "DINO Acceptance")
     dino_ok = dino_ok_cmd and isinstance(dino_payload, dict) and dino_payload.get("failures") == []
 
-    all_ok = unit_ok and acc_ok and smoke_ok and wk2_ok and wk3_ok and wk4_ok and dino_ok
+    all_ok = unit_ok and acc_ok and smoke_ok and seg_ok and trk_ok and emb_ok and dino_ok
     print("\n=== Summary ===")
     print(f"unit_tests={'PASS' if unit_ok else 'FAIL'}")
-    print(f"acceptance={'PASS' if acc_ok else 'FAIL'}")
+    print(f"io_acceptance={'PASS' if acc_ok else 'FAIL'}")
     print(f"smoke={'PASS' if smoke_ok else 'FAIL'}")
-    print(f"week2_acceptance={'PASS' if wk2_ok else 'FAIL'}")
-    print(f"week3_acceptance={'PASS' if wk3_ok else 'FAIL'}")
-    print(f"week4_acceptance={'PASS' if wk4_ok else 'FAIL'}")
+    print(f"segmentation_acceptance={'PASS' if seg_ok else 'FAIL'}")
+    print(f"tracking_acceptance={'PASS' if trk_ok else 'FAIL'}")
+    print(f"embedding_acceptance={'PASS' if emb_ok else 'FAIL'}")
     print(f"dino_acceptance={'PASS' if dino_ok else 'FAIL'}")
     print(f"overall={'PASS' if all_ok else 'FAIL'}")
 

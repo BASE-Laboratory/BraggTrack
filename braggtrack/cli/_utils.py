@@ -1,9 +1,10 @@
-"""Shared CLI helpers for volume loading, CSV I/O, and synthetic fallback."""
+"""Shared CLI helpers for volume loading, CSV I/O, notebooks, and synthetic fallback."""
 
 from __future__ import annotations
 
 import csv
 import hashlib
+import json
 from pathlib import Path
 from typing import Any
 
@@ -59,3 +60,28 @@ def write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
         writer = csv.DictWriter(fh, fieldnames=fieldnames)
         writer.writeheader()
         writer.writerows(rows)
+
+
+def write_qc_notebook(path: Path, *, title: str, code_source: list[str]) -> None:
+    """Write a minimal QC notebook with a markdown header and one code cell."""
+    nb = {
+        "cells": [
+            {
+                "cell_type": "markdown",
+                "metadata": {},
+                "source": [f"# {title}\n"],
+            },
+            {
+                "cell_type": "code",
+                "execution_count": None,
+                "metadata": {},
+                "outputs": [],
+                "source": code_source,
+            },
+        ],
+        "metadata": {"kernelspec": {"display_name": "Python 3", "language": "python", "name": "python3"}},
+        "nbformat": 4,
+        "nbformat_minor": 5,
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(nb, indent=2))

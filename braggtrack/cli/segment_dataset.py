@@ -8,7 +8,7 @@ from pathlib import Path
 
 import numpy as np
 
-from braggtrack.cli._utils import synth_volume_from_file, write_csv
+from braggtrack.cli._utils import synth_volume_from_file, write_csv, write_qc_notebook
 from braggtrack.io import (
     MissingH5DependencyError,
     discover_operando_scans,
@@ -35,7 +35,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Dataset root with scan folders (default: data/sample_operando if present, else .)",
     )
-    parser.add_argument("--outdir", default="artifacts/week2", help="Output artifact directory")
+    parser.add_argument("--outdir", default="artifacts/segmentation", help="Output artifact directory")
     parser.add_argument(
         "--method",
         choices=["classical", "dino"],
@@ -94,49 +94,25 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _write_notebook(path: Path) -> None:
-    nb = {
-        "cells": [
-            {
-                "cell_type": "markdown",
-                "metadata": {},
-                "source": [
-                    "# Week 2 Visual QC\n",
-                    "Loads per-scan feature tables and overlays up to 20 representative objects.\n",
-                ],
-            },
-            {
-                "cell_type": "code",
-                "execution_count": None,
-                "metadata": {},
-                "outputs": [],
-                "source": [
-                    "import csv, json\n",
-                    "from pathlib import Path\n",
-                    "import matplotlib.pyplot as plt\n",
-                    "root = Path('artifacts/week2')\n",
-                    "for scan_dir in sorted(root.glob('scan*')):\n",
-                    "    table = scan_dir / 'features.csv'\n",
-                    "    if not table.exists():\n",
-                    "        continue\n",
-                    "    rows = list(csv.DictReader(table.open()))\n",
-                    "    rows = sorted(rows, key=lambda r: float(r['integrated_intensity']), reverse=True)[:20]\n",
-                    "    print(scan_dir.name, 'objects:', len(rows))\n",
-                    "    fig, ax = plt.subplots(figsize=(8, 4))\n",
-                    "    ax.set_title(f'{scan_dir.name} top-20 object intensities')\n",
-                    "    ax.bar(range(len(rows)), [float(r['integrated_intensity']) for r in rows])\n",
-                    "    ax.set_xlabel('Object rank')\n",
-                    "    ax.set_ylabel('Integrated intensity')\n",
-                    "    plt.show()\n",
-                ],
-            },
-        ],
-        "metadata": {"kernelspec": {"display_name": "Python 3", "language": "python", "name": "python3"}},
-        "nbformat": 4,
-        "nbformat_minor": 5,
-    }
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(nb, indent=2))
+_SEGMENTATION_QC_CODE = [
+    "import csv, json\n",
+    "from pathlib import Path\n",
+    "import matplotlib.pyplot as plt\n",
+    "root = Path('artifacts/segmentation')\n",
+    "for scan_dir in sorted(root.glob('scan*')):\n",
+    "    table = scan_dir / 'features.csv'\n",
+    "    if not table.exists():\n",
+    "        continue\n",
+    "    rows = list(csv.DictReader(table.open()))\n",
+    "    rows = sorted(rows, key=lambda r: float(r['integrated_intensity']), reverse=True)[:20]\n",
+    "    print(scan_dir.name, 'objects:', len(rows))\n",
+    "    fig, ax = plt.subplots(figsize=(8, 4))\n",
+    "    ax.set_title(f'{scan_dir.name} top-20 object intensities')\n",
+    "    ax.bar(range(len(rows)), [float(r['integrated_intensity']) for r in rows])\n",
+    "    ax.set_xlabel('Object rank')\n",
+    "    ax.set_ylabel('Integrated intensity')\n",
+    "    plt.show()\n",
+]
 
 
 def main() -> int:
@@ -208,7 +184,7 @@ def main() -> int:
                     "merge_distance": args.merge_distance,
                     "seed_count": result.seed_count,
                     "component_count": len(table),
-                    "schema_version": "week2.v1",
+                    "schema_version": "segmentation.v1",
                     "labels_archive": str(scan_out / "labels.npz"),
                 },
                 indent=2,
@@ -225,13 +201,17 @@ def main() -> int:
                 "summary": str(scan_out / "summary.json"),
                 "features": str(scan_out / "features.csv"),
                 "labels_archive": str(scan_out / "labels.npz"),
-                "schema_version": "week2.v1",
+                "schema_version": "segmentation.v1",
             }
         )
 
     (outdir / "segmentation_summary.json").write_text(json.dumps(summaries, indent=2))
     write_csv(outdir / "segmentation_summary.csv", summaries)
-    _write_notebook(outdir / "qc" / "week2_visual_qc.ipynb")
+    write_qc_notebook(
+        outdir / "qc" / "segmentation_visual_qc.ipynb",
+        title="Segmentation Visual QC",
+        code_source=_SEGMENTATION_QC_CODE,
+    )
 
     print(json.dumps(summaries, indent=2))
     return 0 if summaries else 1

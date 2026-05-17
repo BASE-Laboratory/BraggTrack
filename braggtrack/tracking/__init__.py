@@ -1,4 +1,4 @@
-"""Tracking utilities for Week 3 physics-only association."""
+"""Multi-scan grain tracking with physics and semantic cost functions."""
 
 from .assignment import associate_frames
 from .cost import CostFunction, GeometrySemanticCost, PositionShapeCost
