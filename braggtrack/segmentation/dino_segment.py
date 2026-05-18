@@ -55,46 +55,101 @@ def _extract_slice_features(
     return np.stack(feature_maps, axis=0), slice_hw
 
 
+def _patch_foreground_masks(
+    volume: np.ndarray,
+    threshold: float,
+    patch_size: int,
+    axis: int = 0,
+) -> list[np.ndarray]:
+    """Boolean foreground mask at patch resolution for each slice.
+
+    A patch is foreground if any of its pixels exceed *threshold*.
+    """
+    n_slices = volume.shape[axis]
+    masks: list[np.ndarray] = []
+    for i in range(n_slices):
+        slc = np.take(volume, i, axis=axis)
+        fg = (slc >= threshold).astype(np.float64)
+        h, w = slc.shape
+        hp = max(1, h // patch_size)
+        wp = max(1, w // patch_size)
+        cropped = fg[: hp * patch_size, : wp * patch_size]
+        blocks = cropped.reshape(hp, patch_size, wp, patch_size)
+        masks.append(blocks.max(axis=(1, 3)) > 0)
+    return masks
+
+
 def _cluster_feature_map(
     features: np.ndarray,
     *,
     n_components_pca: int = 16,
-    min_cluster_size: int = 3,
+    min_cluster_size: int = 5,
     min_samples: int = 2,
+    foreground_mask: np.ndarray | None = None,
+    pca_model: object | None = None,
 ) -> np.ndarray:
     """Cluster a 2D feature map ``(H_p, W_p, D)`` into instance labels.
 
     Uses PCA dimensionality reduction followed by HDBSCAN.
     Returns ``(H_p, W_p)`` int array, 0 = background/noise.
+
+    When *foreground_mask* is given only foreground patches participate
+    in clustering; background patches get label 0.  When *pca_model* is
+    given it is used for the PCA transform instead of fitting per-slice.
     """
     from sklearn.cluster import HDBSCAN
     from sklearn.decomposition import PCA
 
     h_p, w_p, d = features.shape
-    n_patches = h_p * w_p
     flat = features.reshape(-1, d)
 
-    n_comp = min(n_components_pca, d, n_patches)
-    if n_comp < 2:
-        # Too few patches to cluster — assign all to a single region.
-        return np.ones((h_p, w_p), dtype=np.int32)
+    if foreground_mask is not None:
+        fg_flat = foreground_mask.ravel()
+        n_fg = int(fg_flat.sum())
+        if n_fg == 0:
+            return np.zeros((h_p, w_p), dtype=np.int32)
+        if n_fg < 2:
+            out = np.zeros((h_p, w_p), dtype=np.int32)
+            out[foreground_mask] = 1
+            return out
+    else:
+        fg_flat = np.ones(h_p * w_p, dtype=bool)
+        n_fg = h_p * w_p
 
-    reduced = PCA(n_components=n_comp).fit_transform(flat)
+    fg_features = flat[fg_flat]
 
-    effective_min_cluster = max(2, min(min_cluster_size, n_patches // 2))
+    if pca_model is not None:
+        reduced = pca_model.transform(fg_features)
+    else:
+        n_comp = min(n_components_pca, d, n_fg)
+        if n_comp < 2:
+            out = np.zeros((h_p, w_p), dtype=np.int32)
+            if foreground_mask is not None:
+                out[foreground_mask] = 1
+            else:
+                out[:] = 1
+            return out
+        reduced = PCA(n_components=n_comp).fit_transform(fg_features)
+
+    effective_min_cluster = max(2, min(min_cluster_size, n_fg // 2))
     clusterer = HDBSCAN(
         min_cluster_size=effective_min_cluster,
         min_samples=max(1, min(min_samples, effective_min_cluster - 1)),
     )
     raw_labels = clusterer.fit_predict(reduced)
-    # HDBSCAN labels: -1 = noise, 0..K = clusters. Shift to 1-based.
-    labels = np.where(raw_labels >= 0, raw_labels + 1, 0)
+    cluster_labels = np.where(raw_labels >= 0, raw_labels + 1, 0)
 
-    # If HDBSCAN assigned everything to noise, treat all patches as one region.
-    if not np.any(labels > 0):
-        return np.ones((h_p, w_p), dtype=np.int32)
+    if not np.any(cluster_labels > 0):
+        out = np.zeros((h_p, w_p), dtype=np.int32)
+        if foreground_mask is not None:
+            out[foreground_mask] = 1
+        else:
+            out[:] = 1
+        return out
 
-    return labels.reshape(h_p, w_p).astype(np.int32)
+    out = np.zeros(h_p * w_p, dtype=np.int32)
+    out[fg_flat] = cluster_labels
+    return out.reshape(h_p, w_p)
 
 
 def _upsample_labels(
@@ -205,10 +260,10 @@ def segment_dino(
     model_name: str = "facebook/dinov3-vitb16-pretrain-lvd1689m",
     torch_device: str | None = None,
     n_components_pca: int = 16,
-    min_cluster_size: int = 3,
+    min_cluster_size: int = 5,
     min_samples: int = 2,
     threshold_fraction: float = 1.0,
-    min_overlap_fraction: float = 0.3,
+    min_overlap_fraction: float = 0.2,
     axis: int = 0,
 ) -> DinoSegmentationResult:
     """Segment a 3D volume using DINOv3 patch-level features + HDBSCAN.
@@ -232,6 +287,8 @@ def segment_dino(
     axis
         Axis to slice along (0 = mu/z, typically the narrowest).
     """
+    from sklearn.decomposition import PCA
+
     from braggtrack.segmentation.otsu import otsu_threshold
     from braggtrack.semantic.dino import make_patch_encoder
 
@@ -243,13 +300,31 @@ def segment_dino(
 
     features, slice_hw = _extract_slice_features(volume, encoder, axis=axis)
 
+    # Foreground mask at patch resolution — exclude background from clustering.
+    fg_masks = _patch_foreground_masks(volume, threshold, encoder.patch_size, axis=axis)
+
+    # Global PCA across all foreground patches for a consistent feature space
+    # (per-slice PCA causes wildly different cluster counts).
+    n_slices = features.shape[0]
+    d = features.shape[-1]
+    all_fg = [features[i][fg_masks[i]] for i in range(n_slices)]
+    all_fg_cat = np.concatenate(all_fg, axis=0) if any(f.size > 0 for f in all_fg) else np.empty((0, d))
+
+    n_comp = min(n_components_pca, d, all_fg_cat.shape[0])
+    pca = None
+    if n_comp >= 2:
+        pca = PCA(n_components=n_comp)
+        pca.fit(all_fg_cat)
+
     per_slice_labels: list[np.ndarray] = []
-    for i in range(features.shape[0]):
+    for i in range(n_slices):
         patch_labels = _cluster_feature_map(
             features[i],
             n_components_pca=n_components_pca,
             min_cluster_size=min_cluster_size,
             min_samples=min_samples,
+            foreground_mask=fg_masks[i],
+            pca_model=pca,
         )
         full_labels = _upsample_labels(patch_labels, slice_hw, encoder.patch_size)
         per_slice_labels.append(full_labels)
@@ -261,7 +336,6 @@ def segment_dino(
     labels_3d = np.where(foreground, labels_3d, 0).astype(np.int32)
 
     component_count = len(np.unique(labels_3d[labels_3d > 0]))
-    # response is empty — DINO segmentation has no LoG-equivalent response surface.
     return DinoSegmentationResult(
         threshold=threshold,
         seed_count=component_count,

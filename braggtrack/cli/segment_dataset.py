@@ -83,12 +83,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="HuggingFace model ID for the DINO torch backend",
     )
     parser.add_argument("--dino-pca-components", type=int, default=16, help="PCA components for DINO feature reduction")
-    parser.add_argument("--dino-min-cluster-size", type=int, default=3, help="HDBSCAN min_cluster_size")
+    parser.add_argument("--dino-min-cluster-size", type=int, default=5, help="HDBSCAN min_cluster_size")
     parser.add_argument("--dino-min-samples", type=int, default=2, help="HDBSCAN min_samples")
     parser.add_argument(
         "--dino-min-overlap",
         type=float,
-        default=0.3,
+        default=0.2,
         help="Min overlap fraction for 3D slice stitching",
     )
     return parser
