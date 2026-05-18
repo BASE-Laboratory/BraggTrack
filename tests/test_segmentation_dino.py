@@ -19,7 +19,7 @@ class TestMockPatchEncoder(unittest.TestCase):
         enc = MockPatchEncoder()
         img = np.random.default_rng(42).standard_normal((56, 56))
         features = enc.extract_patch_features(img)
-        self.assertEqual(features.shape, (4, 4, 384))
+        self.assertEqual(features.shape, (3, 3, 384))
 
     def test_deterministic(self) -> None:
         enc = MockPatchEncoder()
@@ -40,7 +40,7 @@ class TestMakePatchEncoder(unittest.TestCase):
     def test_mock_backend(self) -> None:
         enc = make_patch_encoder("mock")
         self.assertIsInstance(enc, MockPatchEncoder)
-        self.assertEqual(enc.patch_size, 14)
+        self.assertEqual(enc.patch_size, 16)
         self.assertEqual(enc.feature_dim, 384)
 
 

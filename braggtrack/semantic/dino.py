@@ -4,7 +4,7 @@ Backend is selected with env ``BRAGGTRACK_DINO_BACKEND``:
 
 * ``mock`` — deterministic CPU-only vectors from image bytes (default when
   PyTorch is unavailable).
-* ``torch`` — Hugging Face DINOv3/v2 model (CLS or patch tokens).
+* ``torch`` — Hugging Face DINOv3 model (CLS or patch tokens).
 * ``auto`` — use ``torch`` if import succeeds, else ``mock``.
 """
 
@@ -73,7 +73,7 @@ class MockMultiviewEncoder:
 
 
 class TorchDinoMultiviewEncoder:
-    """Loads Dinov2 once; call :meth:`embed` per spot."""
+    """Loads DINOv3 once; call :meth:`embed` per spot."""
 
     def __init__(self, model_name: str, device: str | None = None) -> None:
         import torch
@@ -119,7 +119,7 @@ def _requested_backend(explicit: BackendName | None) -> BackendName:
 def make_multiview_encoder(
     backend: BackendName | None = None,
     *,
-    model_name: str = "facebook/dinov2-small",
+    model_name: str = "facebook/dinov3-vitb16-pretrain-lvd1689m",
     torch_device: str | None = None,
 ) -> MultiviewEncoder:
     """Construct a reusable encoder (loads torch weights at most once)."""
@@ -154,7 +154,7 @@ class MockPatchEncoder:
 
     @property
     def patch_size(self) -> int:
-        return 14
+        return 16
 
     @property
     def feature_dim(self) -> int:
@@ -177,7 +177,7 @@ class MockPatchEncoder:
 
 
 class TorchDinoPatchEncoder:
-    """Extracts DINOv2/v3 patch tokens as a spatial feature map."""
+    """Extracts DINOv3 patch tokens as a spatial feature map."""
 
     def __init__(self, model_name: str = "facebook/dinov3-vitb16-pretrain-lvd1689m", device: str | None = None) -> None:
         import torch
@@ -189,8 +189,9 @@ class TorchDinoPatchEncoder:
         self._model = AutoModel.from_pretrained(model_name)
         self._model.eval()
         self._model.to(self._device)
-        self._patch_size = getattr(self._model.config, "patch_size", 14)
+        self._patch_size = getattr(self._model.config, "patch_size", 16)
         self._feature_dim = int(self._model.config.hidden_size)
+        self._num_register_tokens = getattr(self._model.config, "num_register_tokens", 0)
 
     @property
     def patch_size(self) -> int:
@@ -206,7 +207,8 @@ class TorchDinoPatchEncoder:
             inputs = self._proc(images=[rgb], return_tensors="pt")
             inputs = {k: v.to(self._device) for k, v in inputs.items()}
             out = self._model(**inputs)
-            patch_tokens = out.last_hidden_state[:, 1:, :].squeeze(0)
+            skip = 1 + self._num_register_tokens
+            patch_tokens = out.last_hidden_state[:, skip:, :].squeeze(0)
             h_img = inputs["pixel_values"].shape[2]
             w_img = inputs["pixel_values"].shape[3]
             h_p = h_img // self._patch_size
@@ -238,7 +240,7 @@ def embed_multiview_mips(
     mip_d: np.ndarray,
     *,
     backend: BackendName | None = None,
-    model_name: str = "facebook/dinov2-small",
+    model_name: str = "facebook/dinov3-vitb16-pretrain-lvd1689m",
     torch_device: str | None = None,
 ) -> np.ndarray:
     """Return a single L2-normalised concatenated feature vector."""

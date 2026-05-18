@@ -35,9 +35,9 @@ def build_parser() -> argparse.ArgumentParser:
         "--backend",
         choices=("auto", "mock", "torch"),
         default="auto",
-        help="Embedding backend (mock needs no PyTorch; torch uses Dinov2-small)",
+        help="Embedding backend (mock needs no PyTorch; torch uses DINOv3)",
     )
-    p.add_argument("--model", default="facebook/dinov2-small", help="HF model id when backend=torch")
+    p.add_argument("--model", default="facebook/dinov3-vitb16-pretrain-lvd1689m", help="HF model id when backend=torch")
     return p
 
 
