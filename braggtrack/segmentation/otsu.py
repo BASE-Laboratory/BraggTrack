@@ -49,11 +49,6 @@ def smooth_thresholds(
     smoothed = np.empty(n, dtype=np.float64)
     for i in range(n):
         smoothed[i] = float(np.median(padded[i : i + w]))
-    residual = np.abs(raw - smoothed)
-    mad = float(np.median(residual)) if n > 1 else 0.0
-    if mad > 0:
-        outlier = residual > mad_scale * mad
-        smoothed[outlier] = smoothed[outlier]  # already local median
     return smoothed
 
 

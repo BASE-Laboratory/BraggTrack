@@ -1,4 +1,4 @@
-"""Grid search over ``cost_alpha`` and ``cost_beta`` for Week 4 semantic tracking.
+"""Grid search over ``cost_alpha`` and ``cost_beta`` for semantic tracking.
 
 Loads feature tables once (and caches ``embeddings.npz`` per scan in memory),
 deep-copies per grid point, optionally merges embeddings, runs
@@ -10,11 +10,11 @@ Example:
 
 .. code-block:: bash
 
-   python scripts/ablation_week4.py \\
-     --indir artifacts/week2 \\
-     --embedding-dir artifacts/week4 \\
+   python scripts/ablation_semantic.py \\
+     --indir artifacts/segmentation \\
+     --embedding-dir artifacts/embedding \\
      --betas 0,0.25,0.5,1.0 \\
-     --output artifacts/week4_ablation/report.json
+     --output artifacts/ablation/report.json
 """
 
 from __future__ import annotations
@@ -26,7 +26,8 @@ import math
 from pathlib import Path
 from typing import Any
 
-from braggtrack.cli.track_dataset import _load_embeddings_npz, _load_feature_csv, _merge_embeddings
+from braggtrack.cli._utils import load_feature_csv
+from braggtrack.cli.track_dataset import _load_embeddings_npz, _merge_embeddings
 from braggtrack.tracking import (
     GeometrySemanticCost,
     PositionShapeCost,
@@ -37,11 +38,11 @@ from braggtrack.tracking import (
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--indir", default="artifacts/week2", help="Week 2 directory with scan*/features.csv")
+    p.add_argument("--indir", default="artifacts/segmentation", help="Directory with scan*/features.csv")
     p.add_argument(
         "--embedding-dir",
         default=None,
-        help="Week 4 embeddings root (required if any beta > 0)",
+        help="Embeddings root (required if any beta > 0)",
     )
     p.add_argument(
         "--alphas",
@@ -53,7 +54,7 @@ def build_parser() -> argparse.ArgumentParser:
         default="0,0.25,0.5,1.0",
         help="Comma-separated cost_beta values (0 = geometry-only)",
     )
-    p.add_argument("--output", default="artifacts/week4_ablation/report.json", help="JSON output path")
+    p.add_argument("--output", default="artifacts/ablation/report.json", help="JSON output path")
     p.add_argument("--position-weight", type=float, default=1.0)
     p.add_argument("--shape-weight", type=float, default=0.5)
     p.add_argument("--gate-mu", type=float, default=math.inf)
@@ -74,7 +75,7 @@ def _load_scan_tables(indir: Path) -> tuple[list[list[dict[str, Any]]], list[str
     for sd in scan_dirs:
         feat = sd / "features.csv"
         if feat.exists():
-            tables.append(_load_feature_csv(feat))
+            tables.append(load_feature_csv(feat))
             names.append(sd.name)
     return tables, names
 
@@ -167,7 +168,7 @@ def main() -> int:
             rows_out.append(row)
 
     report = {
-        "schema_version": "week4_ablation.v1",
+        "schema_version": "ablation.v1",
         "indir": str(indir.resolve()),
         "embedding_dir": str(emb_root.resolve()) if emb_root else None,
         "grid": {"alphas": alphas, "betas": betas},

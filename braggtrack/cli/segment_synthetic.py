@@ -1,4 +1,4 @@
-"""Run a Week 2 segmentation smoke test on a synthetic 3D volume."""
+"""Run a segmentation smoke test on a synthetic 3D volume."""
 
 from __future__ import annotations
 

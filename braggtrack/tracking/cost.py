@@ -1,7 +1,7 @@
 """Pluggable cost functions for frame-to-frame spot association.
 
-Week 3 provides a physics-only baseline (position + shape).
-Week 4 adds a semantic term (cosine on fused DINO-style embeddings).
+PositionShapeCost provides a physics-only baseline (position + shape).
+GeometrySemanticCost adds a semantic term (cosine on fused embeddings).
 """
 
 from __future__ import annotations

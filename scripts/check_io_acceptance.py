@@ -1,4 +1,4 @@
-"""Week 1 acceptance checks for BraggTrack.
+"""I/O and discovery acceptance checks for BraggTrack.
 
 Checks:
 1. All three sample scans are discovered and ordered as 1,2,3.

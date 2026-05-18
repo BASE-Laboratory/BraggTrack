@@ -10,7 +10,7 @@ class AcceptanceScriptTests(unittest.TestCase):
         env["PYTHONPATH"] = f".{os.pathsep}{env.get('PYTHONPATH', '')}"
 
         proc = subprocess.run(
-            [sys.executable, "scripts/check_acceptance.py"],
+            [sys.executable, "scripts/check_io_acceptance.py"],
             check=False,
             capture_output=True,
             text=True,

@@ -4,10 +4,10 @@ import sys
 import unittest
 
 
-class Week3AcceptanceTests(unittest.TestCase):
-    def test_week3_acceptance_script(self) -> None:
+class TestTrackingAcceptance(unittest.TestCase):
+    def test_tracking_acceptance_script(self) -> None:
         proc = subprocess.run(
-            [sys.executable, "scripts/check_week3_acceptance.py"],
+            [sys.executable, "scripts/check_tracking_acceptance.py"],
             check=False,
             capture_output=True,
             text=True,

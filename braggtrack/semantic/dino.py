@@ -1,11 +1,10 @@
-"""Frozen DINO-style embeddings for three orthogonal MIPs (Week 4).
+"""Frozen DINO-style embeddings and patch-level feature extraction.
 
 Backend is selected with env ``BRAGGTRACK_DINO_BACKEND``:
 
-* ``mock`` — deterministic CPU-only vector from image bytes (default when
+* ``mock`` — deterministic CPU-only vectors from image bytes (default when
   PyTorch is unavailable).
-* ``torch`` — Hugging Face ``facebook/dinov2-small`` (one CLS embedding per view,
-  concatenated and L2-normalised).
+* ``torch`` — Hugging Face DINOv3/v2 model (CLS or patch tokens).
 * ``auto`` — use ``torch`` if import succeeds, else ``mock``.
 """
 
@@ -129,6 +128,108 @@ def make_multiview_encoder(
     if use == "mock":
         return MockMultiviewEncoder()
     return TorchDinoMultiviewEncoder(model_name, torch_device)
+
+
+# ---------------------------------------------------------------------------
+# Patch-level feature extraction (for DINO-based segmentation)
+# ---------------------------------------------------------------------------
+
+
+class PatchFeatureEncoder(Protocol):
+    """Interface for extracting spatially-resolved patch features."""
+
+    def extract_patch_features(self, image_2d: np.ndarray) -> np.ndarray:
+        """Return (H_patches, W_patches, D_features) feature map from a 2D grayscale image."""
+        ...
+
+    @property
+    def patch_size(self) -> int: ...
+
+    @property
+    def feature_dim(self) -> int: ...
+
+
+class MockPatchEncoder:
+    """Deterministic hash-based patch features for CI (no GPU)."""
+
+    @property
+    def patch_size(self) -> int:
+        return 14
+
+    @property
+    def feature_dim(self) -> int:
+        return 384
+
+    def extract_patch_features(self, image_2d: np.ndarray) -> np.ndarray:
+        h, w = image_2d.shape[:2]
+        h_p = max(1, h // self.patch_size)
+        w_p = max(1, w // self.patch_size)
+        seed = int.from_bytes(
+            hashlib.sha256(np.asarray(image_2d, dtype=np.float32).tobytes()).digest()[:8],
+            "little",
+            signed=False,
+        )
+        rng = np.random.default_rng(seed)
+        features = rng.standard_normal((h_p, w_p, self.feature_dim)).astype(np.float32)
+        norms = np.linalg.norm(features, axis=-1, keepdims=True)
+        norms = np.where(norms > 0, norms, 1.0)
+        return (features / norms).astype(np.float32)
+
+
+class TorchDinoPatchEncoder:
+    """Extracts DINOv2/v3 patch tokens as a spatial feature map."""
+
+    def __init__(self, model_name: str = "facebook/dinov3-vitb16-pretrain-lvd1689m", device: str | None = None) -> None:
+        import torch
+        from transformers import AutoImageProcessor, AutoModel
+
+        self._torch = torch
+        self._device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+        self._proc = AutoImageProcessor.from_pretrained(model_name)
+        self._model = AutoModel.from_pretrained(model_name)
+        self._model.eval()
+        self._model.to(self._device)
+        self._patch_size = getattr(self._model.config, "patch_size", 14)
+        self._feature_dim = int(self._model.config.hidden_size)
+
+    @property
+    def patch_size(self) -> int:
+        return self._patch_size
+
+    @property
+    def feature_dim(self) -> int:
+        return self._feature_dim
+
+    def extract_patch_features(self, image_2d: np.ndarray) -> np.ndarray:
+        rgb = _mips_to_rgb_uint8(image_2d)
+        with self._torch.no_grad():
+            inputs = self._proc(images=[rgb], return_tensors="pt")
+            inputs = {k: v.to(self._device) for k, v in inputs.items()}
+            out = self._model(**inputs)
+            patch_tokens = out.last_hidden_state[:, 1:, :].squeeze(0)
+            h_img = inputs["pixel_values"].shape[2]
+            w_img = inputs["pixel_values"].shape[3]
+            h_p = h_img // self._patch_size
+            w_p = w_img // self._patch_size
+            features = patch_tokens[: h_p * w_p].reshape(h_p, w_p, -1)
+            x = features.float().cpu().numpy()
+        norms = np.linalg.norm(x, axis=-1, keepdims=True)
+        norms = np.where(norms > 0, norms, 1.0)
+        return (x / norms).astype(np.float32)
+
+
+def make_patch_encoder(
+    backend: BackendName | None = None,
+    *,
+    model_name: str = "facebook/dinov3-vitb16-pretrain-lvd1689m",
+    torch_device: str | None = None,
+) -> PatchFeatureEncoder:
+    """Construct a reusable patch-level encoder."""
+    req = _requested_backend(backend)
+    use = _resolve_backend(req)
+    if use == "mock":
+        return MockPatchEncoder()
+    return TorchDinoPatchEncoder(model_name, torch_device)
 
 
 def embed_multiview_mips(

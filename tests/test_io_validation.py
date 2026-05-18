@@ -5,7 +5,7 @@ from braggtrack.io import BeamlineAdapter, sample_operando_root, validate_sequen
 from braggtrack.io.models import ExperimentSequence, ScanVolumeMeta
 
 
-class Week1ValidationTests(unittest.TestCase):
+class TestIOValidation(unittest.TestCase):
     def test_beamline_adapter_builds_three_scan_sequence(self) -> None:
         adapter = BeamlineAdapter(sample_operando_root())
         sequence = adapter.build_sequence()
