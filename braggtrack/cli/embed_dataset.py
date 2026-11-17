@@ -15,7 +15,8 @@ from braggtrack.io import (
     load_primary_volume,
     resolve_dataset_root,
 )
-from braggtrack.semantic import crop_spot_cube, make_multiview_encoder, orthogonal_mips
+from braggtrack.semantic import DEFAULT_DINO_MODEL, crop_spot_cube, make_multiview_encoder, orthogonal_mips
+from braggtrack.semantic.dino import _requested_backend, _resolve_backend
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -35,14 +36,19 @@ def build_parser() -> argparse.ArgumentParser:
         "--backend",
         choices=("auto", "mock", "torch"),
         default="auto",
-        help="Embedding backend (mock needs no PyTorch; torch uses DINOv3)",
+        help="Embedding backend (mock needs no PyTorch; torch uses DINOv2 default or custom --model)",
     )
-    p.add_argument("--model", default="facebook/dinov3-vitb16-pretrain-lvd1689m", help="HF model id when backend=torch")
+    p.add_argument("--model", default=DEFAULT_DINO_MODEL, help="HF model id when backend=torch")
+    p.add_argument(
+        "--allow-synthetic-fallback",
+        action="store_true",
+        help="Allow deterministic synthetic volume fallback if an HDF5 file lacks a valid 3D dataset",
+    )
     return p
 
 
-def main() -> int:
-    args = build_parser().parse_args()
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
     root = resolve_dataset_root(args.root)
     segdir = Path(args.segdir)
     outdir = Path(args.outdir)
@@ -52,8 +58,9 @@ def main() -> int:
     scan_by_name = {s.scan_name: s for s in scans_fs}
     summaries: list[dict[str, object]] = []
 
+    resolved_backend = _resolve_backend(_requested_backend(args.backend))  # type: ignore[arg-type]
     enc = make_multiview_encoder(
-        args.backend,  # type: ignore[arg-type]
+        resolved_backend,
         model_name=args.model,
     )
 
@@ -77,7 +84,11 @@ def main() -> int:
 
         try:
             volume = load_primary_volume(scan_file.path)
-        except (MissingH5DependencyError, KeyError, ValueError):
+        except MissingH5DependencyError:
+            volume = synth_volume_from_file(scan_file.path)
+        except (KeyError, ValueError):
+            if not args.allow_synthetic_fallback:
+                raise
             volume = synth_volume_from_file(scan_file.path)
 
         if volume.shape != labels_full.shape:
@@ -122,8 +133,9 @@ def main() -> int:
             "scan": name,
             "n_spots": len(label_ids),
             "dim": dim,
-            "backend": args.backend,
-            "model": args.model if args.backend == "torch" else "mock-hash",
+            "backend": resolved_backend,
+            "requested_backend": args.backend,
+            "model": args.model if resolved_backend == "torch" else "mock-hash",
             "schema_version": "embedding.v1",
         }
         (scan_out / "embedding_manifest.json").write_text(json.dumps(manifest, indent=2))

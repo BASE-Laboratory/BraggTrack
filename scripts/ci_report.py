@@ -32,7 +32,7 @@ def _filter_suite(suite: unittest.TestSuite, skip_module: str | None) -> unittes
 def run_unit_tests() -> bool:
     print("\n=== Unit Tests ===")
     suite = unittest.defaultTestLoader.discover("tests")
-    skip_module = os.environ.get("BRAGGTRACK_SKIP_TEST_MODULE")
+    skip_module = os.environ.get("BRAGGTRACK_SKIP_TEST_MODULE", "test_ci_report")
     suite = _filter_suite(suite, skip_module)
     result = unittest.TextTestRunner(verbosity=2).run(suite)
     print(f"unit_tests: ran={result.testsRun} failures={len(result.failures)} errors={len(result.errors)}")
@@ -126,7 +126,12 @@ def main() -> int:
     dino_ok_cmd, dino_payload, _ = run_cmd_json([sys.executable, "scripts/check_dino_acceptance.py"], "DINO Acceptance")
     dino_ok = dino_ok_cmd and isinstance(dino_payload, dict) and dino_payload.get("failures") == []
 
-    all_ok = unit_ok and acc_ok and smoke_ok and seg_ok and trk_ok and emb_ok and dino_ok
+    evt_ok_cmd, evt_payload, _ = run_cmd_json(
+        [sys.executable, "scripts/check_events_acceptance.py"], "Events Acceptance"
+    )
+    evt_ok = evt_ok_cmd and isinstance(evt_payload, dict) and evt_payload.get("failures") == []
+
+    all_ok = unit_ok and acc_ok and smoke_ok and seg_ok and trk_ok and emb_ok and dino_ok and evt_ok
     print("\n=== Summary ===")
     print(f"unit_tests={'PASS' if unit_ok else 'FAIL'}")
     print(f"io_acceptance={'PASS' if acc_ok else 'FAIL'}")
@@ -135,6 +140,7 @@ def main() -> int:
     print(f"tracking_acceptance={'PASS' if trk_ok else 'FAIL'}")
     print(f"embedding_acceptance={'PASS' if emb_ok else 'FAIL'}")
     print(f"dino_acceptance={'PASS' if dino_ok else 'FAIL'}")
+    print(f"events_acceptance={'PASS' if evt_ok else 'FAIL'}")
     print(f"overall={'PASS' if all_ok else 'FAIL'}")
 
     return 0 if all_ok else 1

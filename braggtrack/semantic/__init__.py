@@ -1,9 +1,17 @@
 """Multi-view semantic features (orthogonal MIPs + frozen ViT embeddings)."""
 
-from .dino import embed_multiview_mips, make_multiview_encoder, make_patch_encoder
+from .dino import (
+    DEFAULT_DINO_MODEL,
+    PatchFeatureEncoder,
+    embed_multiview_mips,
+    make_multiview_encoder,
+    make_patch_encoder,
+)
 from .mips import crop_spot_cube, orthogonal_mips
 
 __all__ = [
+    "DEFAULT_DINO_MODEL",
+    "PatchFeatureEncoder",
     "crop_spot_cube",
     "embed_multiview_mips",
     "make_multiview_encoder",

@@ -2,37 +2,54 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import numpy as np
+from scipy.ndimage import find_objects
+
+if TYPE_CHECKING:
+    from braggtrack.io.models import AxisCalibration
 
 
 def extract_instance_table(
     labels: np.ndarray,
     intensity: np.ndarray,
+    *,
+    calibration: AxisCalibration | None = None,
 ) -> list[dict[str, float | int]]:
     """Compute centroid, bbox, integrated intensity, covariance and eigenvalues.
 
     Voxel array axes are ``(z, y, x)`` mapping to reciprocal-space coordinates
     as **μ → z**, **d → y**, **χ → x** (STFC / operando convention).
 
-    Intensity-weighted centroids guard against negative or zero total
-    intensity by falling back to the geometric (unweighted) centroid.
+    When *calibration* is provided, centroids, covariance components, and
+    eigenvalues are transformed into physical units while ``bbox_*`` bounds
+    remain integer voxel indices for 3D array slicing.
     """
     labels = np.asarray(labels)
     intensity = np.asarray(intensity, dtype=np.float64)
+    if labels.size == 0 or int(labels.max()) <= 0:
+        return []
 
+    slices = find_objects(np.where(labels > 0, labels, 0))
     rows: list[dict[str, float | int]] = []
-    for lbl in np.unique(labels):
-        if lbl <= 0:
+    for idx, slc in enumerate(slices):
+        if slc is None:
             continue
-        mask = labels == lbl
-        coords = np.argwhere(mask)  # (N, 3) array of (z, y, x)
-        vals = intensity[mask]
+        lbl = idx + 1
+        sz, sy, sx = slc
+        sub_lbl = labels[sz, sy, sx]
+        mask = sub_lbl == lbl
+        if not np.any(mask):
+            continue
+        local_coords = np.argwhere(mask)
+        vals = intensity[sz, sy, sx][mask]
         count = len(vals)
         sum_i = float(vals.sum())
 
-        z_coords = coords[:, 0].astype(np.float64)
-        y_coords = coords[:, 1].astype(np.float64)
-        x_coords = coords[:, 2].astype(np.float64)
+        z_coords = local_coords[:, 0].astype(np.float64) + float(sz.start)
+        y_coords = local_coords[:, 1].astype(np.float64) + float(sy.start)
+        x_coords = local_coords[:, 2].astype(np.float64) + float(sx.start)
 
         # Intensity-weighted centroid; fall back to geometric centroid
         # if total intensity is non-positive (avoids sign-flip).
@@ -46,11 +63,18 @@ def extract_instance_table(
             cy = float(y_coords.mean())
             cx = float(x_coords.mean())
 
-        # Weighted covariance (same weight logic)
-        dz = z_coords - cz
-        dy = y_coords - cy
-        dx = x_coords - cx
+        if calibration is not None:
+            c_mu, c_chi, c_d = calibration.voxel_to_physical(cz, cy, cx)
+            dz = (z_coords - cz) * calibration.mu_step
+            dy = (y_coords - cy) * calibration.d_step
+            dx = (x_coords - cx) * calibration.chi_step
+        else:
+            c_mu, c_chi, c_d = cz, cx, cy
+            dz = z_coords - cz
+            dy = y_coords - cy
+            dx = x_coords - cx
 
+        # Weighted covariance (same weight logic)
         if sum_i > 0:
             w = vals / sum_i
         else:
@@ -71,22 +95,22 @@ def extract_instance_table(
             ]
         )
         eigvals = np.linalg.eigvalsh(cov)
-        eigvals = np.sort(eigvals)[::-1]  # descending
+        eigvals = np.maximum(0.0, np.sort(eigvals)[::-1])  # non-negative descending
 
         rows.append(
             {
                 "label": int(lbl),
                 "voxel_count": count,
                 "integrated_intensity": sum_i,
-                "centroid_mu": cz,
-                "centroid_chi": cx,
-                "centroid_d": cy,
-                "bbox_min_z": int(coords[:, 0].min()),
-                "bbox_max_z": int(coords[:, 0].max()),
-                "bbox_min_y": int(coords[:, 1].min()),
-                "bbox_max_y": int(coords[:, 1].max()),
-                "bbox_min_x": int(coords[:, 2].min()),
-                "bbox_max_x": int(coords[:, 2].max()),
+                "centroid_mu": c_mu,
+                "centroid_chi": c_chi,
+                "centroid_d": c_d,
+                "bbox_min_z": int(z_coords.min()),
+                "bbox_max_z": int(z_coords.max()),
+                "bbox_min_y": int(y_coords.min()),
+                "bbox_max_y": int(y_coords.max()),
+                "bbox_min_x": int(x_coords.min()),
+                "bbox_max_x": int(x_coords.max()),
                 "cov_zz": czz,
                 "cov_yy": cyy,
                 "cov_xx": cxx,

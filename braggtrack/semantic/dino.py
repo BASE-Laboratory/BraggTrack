@@ -4,7 +4,7 @@ Backend is selected with env ``BRAGGTRACK_DINO_BACKEND``:
 
 * ``mock`` — deterministic CPU-only vectors from image bytes (default when
   PyTorch is unavailable).
-* ``torch`` — Hugging Face DINOv3 model (CLS or patch tokens).
+* ``torch`` — Hugging Face DINOv2 (ungated default) or DINOv3 model.
 * ``auto`` — use ``torch`` if import succeeds, else ``mock``.
 """
 
@@ -12,11 +12,12 @@ from __future__ import annotations
 
 import hashlib
 import os
-from typing import Literal, Protocol
+from typing import Any, Literal, Protocol
 
 import numpy as np
 
 BackendName = Literal["auto", "mock", "torch"]
+DEFAULT_DINO_MODEL = "facebook/dinov2-small"
 
 
 def _resolve_backend(requested: BackendName) -> Literal["mock", "torch"]:
@@ -29,6 +30,23 @@ def _resolve_backend(requested: BackendName) -> Literal["mock", "torch"]:
     except ImportError:
         return "mock"
     return "torch"
+
+
+def _load_hf_dino(model_name: str) -> tuple[Any, Any]:
+    from transformers import AutoImageProcessor, AutoModel
+
+    try:
+        proc = AutoImageProcessor.from_pretrained(model_name)
+        model = AutoModel.from_pretrained(model_name)
+    except OSError as exc:
+        msg = str(exc)
+        if any(tok in msg.lower() for tok in ("gated", "401", "403", "authenticated")):
+            raise OSError(
+                f"Model '{model_name}' requires HuggingFace authentication. "
+                f"Use the ungated default '{DEFAULT_DINO_MODEL}' or set HF_TOKEN after accepting the model license."
+            ) from exc
+        raise
+    return proc, model
 
 
 def _mock_embedding_from_mips(
@@ -73,16 +91,14 @@ class MockMultiviewEncoder:
 
 
 class TorchDinoMultiviewEncoder:
-    """Loads DINOv3 once; call :meth:`embed` per spot."""
+    """Loads DINOv2/DINOv3 once; call :meth:`embed` per spot."""
 
-    def __init__(self, model_name: str, device: str | None = None) -> None:
+    def __init__(self, model_name: str = DEFAULT_DINO_MODEL, device: str | None = None) -> None:
         import torch
-        from transformers import AutoImageProcessor, AutoModel
 
         self._torch = torch
         self._device = device or ("cuda" if torch.cuda.is_available() else "cpu")
-        self._proc = AutoImageProcessor.from_pretrained(model_name)
-        self._model = AutoModel.from_pretrained(model_name)
+        self._proc, self._model = _load_hf_dino(model_name)
         self._model.eval()
         self._model.to(self._device)
 
@@ -119,7 +135,7 @@ def _requested_backend(explicit: BackendName | None) -> BackendName:
 def make_multiview_encoder(
     backend: BackendName | None = None,
     *,
-    model_name: str = "facebook/dinov3-vitb16-pretrain-lvd1689m",
+    model_name: str = DEFAULT_DINO_MODEL,
     torch_device: str | None = None,
 ) -> MultiviewEncoder:
     """Construct a reusable encoder (loads torch weights at most once)."""
@@ -131,7 +147,7 @@ def make_multiview_encoder(
 
 
 # ---------------------------------------------------------------------------
-# Patch-level feature extraction (for DINO-based segmentation)
+# Patch-level feature extraction (for ROI precursors and DINO segmentation)
 # ---------------------------------------------------------------------------
 
 
@@ -177,21 +193,18 @@ class MockPatchEncoder:
 
 
 class TorchDinoPatchEncoder:
-    """Extracts DINOv3 patch tokens as a spatial feature map."""
+    """Extracts DINOv2/DINOv3 patch tokens as a spatial feature map."""
 
-    def __init__(self, model_name: str = "facebook/dinov3-vitb16-pretrain-lvd1689m", device: str | None = None) -> None:
+    def __init__(self, model_name: str = DEFAULT_DINO_MODEL, device: str | None = None) -> None:
         import torch
-        from transformers import AutoImageProcessor, AutoModel
 
         self._torch = torch
         self._device = device or ("cuda" if torch.cuda.is_available() else "cpu")
-        self._proc = AutoImageProcessor.from_pretrained(model_name)
-        self._model = AutoModel.from_pretrained(model_name)
+        self._proc, self._model = _load_hf_dino(model_name)
         self._model.eval()
         self._model.to(self._device)
-        self._patch_size = getattr(self._model.config, "patch_size", 16)
-        self._feature_dim = int(self._model.config.hidden_size)
-        self._num_register_tokens = getattr(self._model.config, "num_register_tokens", 0)
+        self._patch_size = int(getattr(self._model.config, "patch_size", 14))
+        self._feature_dim = int(getattr(self._model.config, "hidden_size", 384))
 
     @property
     def patch_size(self) -> int:
@@ -207,13 +220,15 @@ class TorchDinoPatchEncoder:
             inputs = self._proc(images=[rgb], return_tensors="pt")
             inputs = {k: v.to(self._device) for k, v in inputs.items()}
             out = self._model(**inputs)
-            skip = 1 + self._num_register_tokens
-            patch_tokens = out.last_hidden_state[:, skip:, :].squeeze(0)
-            h_img = inputs["pixel_values"].shape[2]
-            w_img = inputs["pixel_values"].shape[3]
+            h_img = int(inputs["pixel_values"].shape[2])
+            w_img = int(inputs["pixel_values"].shape[3])
             h_p = h_img // self._patch_size
             w_p = w_img // self._patch_size
-            features = patch_tokens[: h_p * w_p].reshape(h_p, w_p, -1)
+            expected_patches = h_p * w_p
+            seq_len = int(out.last_hidden_state.shape[1])
+            skip = max(0, seq_len - expected_patches)
+            patch_tokens = out.last_hidden_state[:, skip : skip + expected_patches, :].squeeze(0)
+            features = patch_tokens.reshape(h_p, w_p, -1)
             x = features.float().cpu().numpy()
         norms = np.linalg.norm(x, axis=-1, keepdims=True)
         norms = np.where(norms > 0, norms, 1.0)
@@ -223,7 +238,7 @@ class TorchDinoPatchEncoder:
 def make_patch_encoder(
     backend: BackendName | None = None,
     *,
-    model_name: str = "facebook/dinov3-vitb16-pretrain-lvd1689m",
+    model_name: str = DEFAULT_DINO_MODEL,
     torch_device: str | None = None,
 ) -> PatchFeatureEncoder:
     """Construct a reusable patch-level encoder."""
@@ -240,7 +255,7 @@ def embed_multiview_mips(
     mip_d: np.ndarray,
     *,
     backend: BackendName | None = None,
-    model_name: str = "facebook/dinov3-vitb16-pretrain-lvd1689m",
+    model_name: str = DEFAULT_DINO_MODEL,
     torch_device: str | None = None,
 ) -> np.ndarray:
     """Return a single L2-normalised concatenated feature vector."""

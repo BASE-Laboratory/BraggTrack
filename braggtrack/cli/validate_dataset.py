@@ -19,8 +19,8 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main() -> int:
-    args = build_parser().parse_args()
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
     root = resolve_dataset_root(args.root)
     adapter = BeamlineAdapter(root)
     sequence = adapter.build_sequence()

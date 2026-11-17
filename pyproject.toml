@@ -4,14 +4,14 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "braggtrack"
-version = "0.1.0"
+version = "0.2.0"
 description = "Semantic 4D kinematics and fracture tracking for operando diffraction."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
 authors = [{ name = "James Le Houx", email = "j.lehoux@greenwich.ac.uk" }]
 classifiers = [
-  "Development Status :: 3 - Alpha",
+  "Development Status :: 4 - Beta",
   "Intended Audience :: Science/Research",
   "License :: OSI Approved :: MIT License",
   "Programming Language :: Python :: 3",
@@ -58,6 +58,8 @@ braggtrack-segment-synthetic = "braggtrack.cli.segment_synthetic:main"
 braggtrack-segment-dataset = "braggtrack.cli.segment_dataset:main"
 braggtrack-track-dataset = "braggtrack.cli.track_dataset:main"
 braggtrack-embed-dataset = "braggtrack.cli.embed_dataset:main"
+braggtrack-events = "braggtrack.cli.detect_events:main"
+braggtrack-run = "braggtrack.cli.run_pipeline:main"
 
 [tool.setuptools.packages.find]
 include = ["braggtrack*"]

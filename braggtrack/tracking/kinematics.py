@@ -45,6 +45,9 @@ class GrainKinematics:
     anisotropy: np.ndarray  # eig_1 / eig_3
     covariance_trace: np.ndarray  # eig_1 + eig_2 + eig_3
 
+    # Raw shift in d-axis (always meaningful even when uncalibrated)
+    delta_d: np.ndarray = field(default_factory=lambda: np.empty(0, dtype=np.float64))
+
 
 @dataclass
 class KinematicsSummary:
@@ -62,7 +65,8 @@ class KinematicsSummary:
     volume_change_frac: list[float]
     max_anisotropy: list[float]
 
-    grain_kinematics: list[GrainKinematics] = field(repr=False)
+    calibrated_axes: bool = False
+    grain_kinematics: list[GrainKinematics] = field(default_factory=list, repr=False)
 
 
 def compute_grain_kinematics(
@@ -97,9 +101,10 @@ def compute_grain_kinematics(
         chi = np.array([float(r["centroid_chi"]) for r in obs])
         d = np.array([float(r["centroid_d"]) for r in obs])
 
-        # Strain: (d - d₀) / d₀
+        # Strain: (d - d₀) / d₀ and raw shift Δd = d - d₀
         d0 = d[0]
-        strain = (d - d0) / d0 if d0 != 0 else np.zeros(n)
+        delta_d = d - d0
+        strain = delta_d / d0 if d0 != 0 else np.zeros(n)
 
         # Misorientation: drift from initial position
         dmu = mu - mu[0]
@@ -137,6 +142,7 @@ def compute_grain_kinematics(
                 eigenvalues=eigs,
                 anisotropy=anisotropy,
                 covariance_trace=cov_trace,
+                delta_d=delta_d,
             )
         )
     return results
@@ -145,6 +151,8 @@ def compute_grain_kinematics(
 def summarize_kinematics(
     grain_kinematics: list[GrainKinematics],
     n_scans: int,
+    *,
+    calibrated_axes: bool = False,
 ) -> KinematicsSummary:
     """Aggregate per-grain kinematics into a summary table.
 
@@ -154,6 +162,8 @@ def summarize_kinematics(
         Output of :func:`compute_grain_kinematics`.
     n_scans
         Total number of scans in the sequence.
+    calibrated_axes
+        Whether centroids/eigenvalues were converted to physical ``(mu, chi, d)`` units.
     """
     track_ids: list[int] = []
     max_strain: list[float] = []
@@ -164,11 +174,11 @@ def summarize_kinematics(
 
     for gk in grain_kinematics:
         track_ids.append(gk.track_id)
-        max_strain.append(float(np.max(np.abs(gk.strain))))
+        max_strain.append(float(np.max(np.abs(gk.strain))) if len(gk.strain) > 0 else 0.0)
         total_misorientation.append(float(gk.misorientation_total[-1]) if len(gk.misorientation_total) > 0 else 0.0)
         intensity_change.append(float(gk.relative_intensity[-1]) if len(gk.relative_intensity) > 0 else 0.0)
         volume_change.append(float(gk.relative_volume[-1]) if len(gk.relative_volume) > 0 else 0.0)
-        max_anisotropy.append(float(np.max(gk.anisotropy)))
+        max_anisotropy.append(float(np.max(gk.anisotropy)) if len(gk.anisotropy) > 0 else 1.0)
 
     n_full = sum(1 for gk in grain_kinematics if len(gk.scan_indices) >= n_scans)
 
@@ -182,12 +192,31 @@ def summarize_kinematics(
         intensity_change_frac=intensity_change,
         volume_change_frac=volume_change,
         max_anisotropy=max_anisotropy,
+        calibrated_axes=calibrated_axes,
         grain_kinematics=grain_kinematics,
     )
 
 
+def summary_to_dict(summary: KinematicsSummary) -> dict[str, Any]:
+    """Serialize :class:`KinematicsSummary` to a JSON-friendly dictionary."""
+    return {
+        "n_tracks": summary.n_tracks,
+        "n_full_tracks": summary.n_full_tracks,
+        "n_scans": summary.n_scans,
+        "calibrated_axes": summary.calibrated_axes,
+        "track_ids": summary.track_ids,
+        "max_strain": summary.max_strain,
+        "total_misorientation": summary.total_misorientation,
+        "intensity_change_frac": summary.intensity_change_frac,
+        "volume_change_frac": summary.volume_change_frac,
+        "max_anisotropy": summary.max_anisotropy,
+    }
+
+
 def kinematics_to_table(
     grain_kinematics: list[GrainKinematics],
+    *,
+    include_delta_d: bool = False,
 ) -> list[dict[str, Any]]:
     """Flatten per-grain kinematics into a row-per-observation table.
 
@@ -198,26 +227,27 @@ def kinematics_to_table(
     rows: list[dict[str, Any]] = []
     for gk in grain_kinematics:
         for i, scan_idx in enumerate(gk.scan_indices):
-            rows.append(
-                {
-                    "track_id": gk.track_id,
-                    "scan_idx": scan_idx,
-                    "centroid_mu": float(gk.centroid_mu[i]),
-                    "centroid_chi": float(gk.centroid_chi[i]),
-                    "centroid_d": float(gk.centroid_d[i]),
-                    "strain": float(gk.strain[i]),
-                    "misorientation_mu": float(gk.misorientation_mu[i]),
-                    "misorientation_chi": float(gk.misorientation_chi[i]),
-                    "misorientation_total": float(gk.misorientation_total[i]),
-                    "integrated_intensity": float(gk.integrated_intensity[i]),
-                    "voxel_count": float(gk.voxel_count[i]),
-                    "relative_intensity": float(gk.relative_intensity[i]),
-                    "relative_volume": float(gk.relative_volume[i]),
-                    "eig_1": float(gk.eigenvalues[i, 0]),
-                    "eig_2": float(gk.eigenvalues[i, 1]),
-                    "eig_3": float(gk.eigenvalues[i, 2]),
-                    "anisotropy": float(gk.anisotropy[i]),
-                    "covariance_trace": float(gk.covariance_trace[i]),
-                }
-            )
+            row: dict[str, Any] = {
+                "track_id": gk.track_id,
+                "scan_idx": scan_idx,
+                "centroid_mu": float(gk.centroid_mu[i]),
+                "centroid_chi": float(gk.centroid_chi[i]),
+                "centroid_d": float(gk.centroid_d[i]),
+                "strain": float(gk.strain[i]),
+                "misorientation_mu": float(gk.misorientation_mu[i]),
+                "misorientation_chi": float(gk.misorientation_chi[i]),
+                "misorientation_total": float(gk.misorientation_total[i]),
+                "integrated_intensity": float(gk.integrated_intensity[i]),
+                "voxel_count": float(gk.voxel_count[i]),
+                "relative_intensity": float(gk.relative_intensity[i]),
+                "relative_volume": float(gk.relative_volume[i]),
+                "eig_1": float(gk.eigenvalues[i, 0]),
+                "eig_2": float(gk.eigenvalues[i, 1]),
+                "eig_3": float(gk.eigenvalues[i, 2]),
+                "anisotropy": float(gk.anisotropy[i]),
+                "covariance_trace": float(gk.covariance_trace[i]),
+            }
+            if include_delta_d and len(gk.delta_d) > i:
+                row["delta_d"] = float(gk.delta_d[i])
+            rows.append(row)
     return rows

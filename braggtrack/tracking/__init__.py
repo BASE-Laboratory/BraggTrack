@@ -2,28 +2,50 @@
 
 from .assignment import associate_frames
 from .cost import CostFunction, GeometrySemanticCost, PositionShapeCost
+from .events import LineageEvent, SplitMergeConfig, events_to_table, resolve_splits_and_merges
 from .kinematics import (
     GrainKinematics,
     KinematicsSummary,
     compute_grain_kinematics,
     kinematics_to_table,
     summarize_kinematics,
+    summary_to_dict,
 )
 from .lifecycle import TrackEvent, build_tracks, tracks_to_table
 from .metrics import compute_tracking_metrics
+from .precursors import (
+    ObservationPrecursorScore,
+    PrecursorCandidate,
+    PrecursorConfig,
+    compute_fracture_precursors,
+    precursors_to_table,
+)
+from .synthetic import generate_crossing_scenario, generate_fracture_scenario
 
 __all__ = [
     "CostFunction",
     "GeometrySemanticCost",
     "GrainKinematics",
     "KinematicsSummary",
+    "LineageEvent",
+    "ObservationPrecursorScore",
     "PositionShapeCost",
+    "PrecursorCandidate",
+    "PrecursorConfig",
+    "SplitMergeConfig",
     "TrackEvent",
     "associate_frames",
     "build_tracks",
+    "compute_fracture_precursors",
     "compute_grain_kinematics",
     "compute_tracking_metrics",
+    "events_to_table",
+    "generate_crossing_scenario",
+    "generate_fracture_scenario",
     "kinematics_to_table",
+    "precursors_to_table",
+    "resolve_splits_and_merges",
     "summarize_kinematics",
+    "summary_to_dict",
     "tracks_to_table",
 ]
