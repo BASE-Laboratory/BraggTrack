@@ -25,6 +25,9 @@ def _resolve_backend(requested: BackendName) -> Literal["mock", "torch"]:
         return "mock"
     if requested == "torch":
         return "torch"
+    env_override = os.environ.get("BRAGGTRACK_DINO_BACKEND", "").strip().lower()
+    if env_override in ("mock", "torch"):
+        return "mock" if env_override == "mock" else "torch"
     try:
         import torch  # noqa: F401
     except ImportError:

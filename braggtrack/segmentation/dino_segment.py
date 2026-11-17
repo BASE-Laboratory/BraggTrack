@@ -61,10 +61,13 @@ def _patch_foreground_masks(
     threshold: float,
     patch_size: int,
     axis: int = 0,
+    grid_hw: tuple[int, int] | None = None,
 ) -> list[np.ndarray]:
     """Boolean foreground mask at patch resolution for each slice.
 
     A patch is foreground if any of its pixels exceed *threshold*.
+    Handles both fixed-stride grids (``mock``) and resized ViT patch grids
+    (e.g. ``16x16`` ``facebook/dinov2-small`` tokens on ``250x250`` slices).
     """
     n_slices = volume.shape[axis]
     masks: list[np.ndarray] = []
@@ -72,11 +75,22 @@ def _patch_foreground_masks(
         slc = np.take(volume, i, axis=axis)
         fg = (slc >= threshold).astype(np.float64)
         h, w = slc.shape
-        hp = max(1, h // patch_size)
-        wp = max(1, w // patch_size)
-        cropped = fg[: hp * patch_size, : wp * patch_size]
-        blocks = cropped.reshape(hp, patch_size, wp, patch_size)
-        masks.append(blocks.max(axis=(1, 3)) > 0)
+        default_hw = (max(1, h // patch_size), max(1, w // patch_size))
+        hp, wp = grid_hw if grid_hw is not None else default_hw
+        if (hp, wp) == default_hw and hp * patch_size <= h and wp * patch_size <= w:
+            cropped = fg[: hp * patch_size, : wp * patch_size]
+            blocks = cropped.reshape(hp, patch_size, wp, patch_size)
+            masks.append(blocks.max(axis=(1, 3)) > 0)
+        else:
+            r_edges = np.linspace(0, h, hp + 1, dtype=int)
+            c_edges = np.linspace(0, w, wp + 1, dtype=int)
+            pooled = np.zeros((hp, wp), dtype=bool)
+            for r_i in range(hp):
+                r0, r1 = r_edges[r_i], max(r_edges[r_i] + 1, r_edges[r_i + 1])
+                for c_i in range(wp):
+                    c0, c1 = c_edges[c_i], max(c_edges[c_i] + 1, c_edges[c_i + 1])
+                    pooled[r_i, c_i] = bool(np.any(fg[r0:r1, c0:c1] > 0))
+            masks.append(pooled)
     return masks
 
 
@@ -159,6 +173,13 @@ def _upsample_labels(
     patch_size: int,
 ) -> np.ndarray:
     """Nearest-neighbor upsample patch-resolution labels to pixel resolution."""
+    th, tw = target_shape
+    hp, wp = patch_labels.shape
+    default_hw = (max(1, th // patch_size), max(1, tw // patch_size))
+    if (hp, wp) != default_hw and th > 0 and tw > 0 and hp > 0 and wp > 0:
+        r_idx = (np.arange(th) * hp) // th
+        c_idx = (np.arange(tw) * wp) // tw
+        return patch_labels[np.ix_(r_idx, c_idx)].astype(np.int32)
     expanded = np.repeat(np.repeat(patch_labels, patch_size, axis=0), patch_size, axis=1)
     out = np.zeros(target_shape, dtype=np.int32)
     h = min(expanded.shape[0], target_shape[0])
@@ -302,7 +323,13 @@ def segment_dino(
     features, slice_hw = _extract_slice_features(volume, encoder, axis=axis)
 
     # Foreground mask at patch resolution — exclude background from clustering.
-    fg_masks = _patch_foreground_masks(volume, threshold, encoder.patch_size, axis=axis)
+    fg_masks = _patch_foreground_masks(
+        volume,
+        threshold,
+        encoder.patch_size,
+        axis=axis,
+        grid_hw=(features.shape[1], features.shape[2]),
+    )
 
     # Global PCA across all foreground patches for a consistent feature space
     # (per-slice PCA causes wildly different cluster counts).

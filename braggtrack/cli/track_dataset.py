@@ -10,7 +10,15 @@ from typing import Any
 import numpy as np
 
 from braggtrack.cli._utils import load_feature_csv, write_csv, write_qc_notebook
+from braggtrack.io import (
+    AxisCalibration,
+    DetectorGeometry,
+    annotate_crystallographic_columns,
+    export_imaged11_flt,
+    export_nexus_process,
+)
 from braggtrack.tracking import (
+    GapClosingConfig,
     GeometrySemanticCost,
     PositionShapeCost,
     PrecursorConfig,
@@ -40,6 +48,18 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--gate-chi", type=float, default=float("inf"))
     parser.add_argument("--gate-d", type=float, default=float("inf"))
     parser.add_argument("--max-cost", type=float, default=float("inf"))
+    parser.add_argument(
+        "--max-gap",
+        type=int,
+        default=0,
+        help="Maximum missing intermediate scans to bridge via gap closing (0 disables)",
+    )
+    parser.add_argument(
+        "--gap-max-cost",
+        type=float,
+        default=25.0,
+        help="Maximum penalized cost allowed when bridging missing scans",
+    )
     parser.add_argument(
         "--embedding-dir",
         default=None,
@@ -80,6 +100,21 @@ def build_parser() -> argparse.ArgumentParser:
         default=2,
         help="Minimum contiguous scans above threshold to rank as a fracture precursor",
     )
+    parser.add_argument(
+        "--detector-json",
+        default=None,
+        help="Optional DetectorGeometry JSON path to annotate (omega, 2theta, eta, d, |Q|) columns",
+    )
+    parser.add_argument(
+        "--export-imaged11",
+        default=None,
+        help="Optional path to write an ImageD11 .flt columnfile of tracked reflections",
+    )
+    parser.add_argument(
+        "--export-nexus",
+        default=None,
+        help="Optional path to write a NeXus NXprocess HDF5 summary file",
+    )
     return parser
 
 
@@ -100,7 +135,7 @@ def _merge_embeddings(rows: list[dict[str, Any]], emb: dict[int, np.ndarray]) ->
             row["embedding"] = emb[lid]
 
 
-def _detect_calibrated_axes(scan_dirs: list[Path]) -> bool:
+def _detect_calibration(scan_dirs: list[Path]) -> AxisCalibration | None:
     for sd in scan_dirs:
         summary_path = sd / "summary.json"
         if not summary_path.exists():
@@ -111,8 +146,8 @@ def _detect_calibrated_axes(scan_dirs: list[Path]) -> bool:
             continue
         cal = meta.get("calibration")
         if isinstance(cal, dict) and bool(cal.get("calibrated", False)):
-            return True
-    return False
+            return AxisCalibration.from_dict(cal)
+    return None
 
 
 _TRACKING_QC_CODE = [
@@ -204,6 +239,7 @@ def main(argv: list[str] | None = None) -> int:
     else:
         cost_fn = geo
 
+    gap_cfg = GapClosingConfig(max_gap=args.max_gap, max_cost=args.gap_max_cost) if args.max_gap > 0 else None
     sm_cfg = (
         SplitMergeConfig(
             max_distance=args.split_max_distance,
@@ -214,17 +250,28 @@ def main(argv: list[str] | None = None) -> int:
         if args.detect_events
         else None
     )
-    G = build_tracks(scan_tables, cost_fn=cost_fn, max_cost=args.max_cost, split_merge_config=sm_cfg)
+    G = build_tracks(
+        scan_tables,
+        cost_fn=cost_fn,
+        max_cost=args.max_cost,
+        gap_closing_config=gap_cfg,
+        split_merge_config=sm_cfg,
+    )
     metrics = compute_tracking_metrics(G, n_scans=len(scan_tables))
+
+    active_cal = _detect_calibration(used_scan_dirs)
+    calibrated_axes = active_cal is not None
+    detector_geom = DetectorGeometry.from_json(args.detector_json) if args.detector_json else None
 
     track_rows = tracks_to_table(G)
     for tr in track_rows:
         tr.pop("embedding", None)
+    if detector_geom is not None:
+        track_rows = annotate_crystallographic_columns(track_rows, detector_geom, calibration=active_cal)
     write_csv(outdir / "tracks.csv", track_rows)
     (outdir / "tracking_metrics.json").write_text(json.dumps(metrics, indent=2))
 
     # Per-grain kinematics export.
-    calibrated_axes = _detect_calibrated_axes(used_scan_dirs)
     gk = compute_grain_kinematics(track_rows)
     kin_summary = summarize_kinematics(gk, n_scans=len(scan_tables), calibrated_axes=calibrated_axes)
     write_csv(outdir / "kinematics.csv", kinematics_to_table(gk, include_delta_d=True))
@@ -257,11 +304,18 @@ def main(argv: list[str] | None = None) -> int:
         "schema_version": schema_version,
         "cost_alpha": args.cost_alpha,
         "cost_beta": args.cost_beta,
+        "max_gap": args.max_gap,
         "embedding_dir": str(emb_root) if emb_root else None,
         "detect_events": bool(args.detect_events),
+        "detector_geometry": detector_geom.to_dict() if detector_geom is not None else None,
     }
     (outdir / "tracking_summary.json").write_text(json.dumps(summary, indent=2))
     write_qc_notebook(outdir / "qc" / "tracking_qc.ipynb", title="Tracking QC", code_source=_TRACKING_QC_CODE)
+
+    if args.export_imaged11:
+        export_imaged11_flt(track_rows, args.export_imaged11, geometry=detector_geom, calibration=active_cal)
+    if args.export_nexus:
+        export_nexus_process(outdir, args.export_nexus, geometry=detector_geom, calibration=active_cal)
 
     print(json.dumps(summary, indent=2))
     return 0

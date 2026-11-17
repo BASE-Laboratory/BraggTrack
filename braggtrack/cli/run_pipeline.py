@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any
 
 import braggtrack
-from braggtrack.cli import detect_events, embed_dataset, segment_dataset, track_dataset
+from braggtrack.cli import detect_events, embed_dataset, report_dataset, segment_dataset, track_dataset
 from braggtrack.io import BeamlineAdapter, discover_operando_scans, resolve_dataset_root, validate_sequence
 from braggtrack.semantic import DEFAULT_DINO_MODEL
 
@@ -48,8 +48,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--smooth-window", type=int, default=5, help="Cross-scan rolling median threshold window")
     parser.add_argument("--calibration-json", default=None, help="Optional AxisCalibration JSON path")
+    parser.add_argument(
+        "--detector-json", default=None, help="Optional DetectorGeometry JSON path for (2theta, eta, Q)"
+    )
     parser.add_argument("--cost-alpha", type=float, default=1.0, help="Geometry weight in semantic cost")
     parser.add_argument("--cost-beta", type=float, default=0.25, help="Semantic embedding weight in tracking cost")
+    parser.add_argument("--max-gap", type=int, default=0, help="Max missing intermediate scans to bridge (0 disables)")
     parser.add_argument(
         "--split-max-distance", type=float, default=25.0, help="Max centroid distance for splits/merges"
     )
@@ -61,6 +65,13 @@ def build_parser() -> argparse.ArgumentParser:
         default=True,
         help="Run split/merge lineage and fracture precursor detection stage (default: enabled)",
     )
+    parser.add_argument(
+        "--report",
+        action="store_true",
+        help="Generate static publication figures and interactive HTML 4D explorer under <outdir>/report",
+    )
+    parser.add_argument("--export-imaged11", default=None, help="Optional ImageD11 .flt export path")
+    parser.add_argument("--export-nexus", default=None, help="Optional NeXus NXprocess .nxs/.h5 export path")
     parser.add_argument(
         "--allow-synthetic-fallback",
         action="store_true",
@@ -102,12 +113,17 @@ def _merge_config_overrides(args: argparse.Namespace) -> dict[str, Any]:
         "method": args.method,
         "smooth_window": args.smooth_window,
         "calibration_json": args.calibration_json,
+        "detector_json": args.detector_json,
         "cost_alpha": args.cost_alpha,
         "cost_beta": args.cost_beta,
+        "max_gap": args.max_gap,
         "split_max_distance": args.split_max_distance,
         "precursor_threshold": args.precursor_threshold,
         "precursor_persistence": args.precursor_persistence,
         "detect_events": bool(args.detect_events),
+        "report": bool(args.report),
+        "export_imaged11": args.export_imaged11,
+        "export_nexus": args.export_nexus,
         "allow_synthetic_fallback": bool(args.allow_synthetic_fallback),
         "segmentation_extra_args": [],
         "tracking_extra_args": [],
@@ -132,6 +148,7 @@ def main(argv: list[str] | None = None) -> int:
     emb_dir = outdir / "embedding"
     trk_dir = outdir / "tracking"
     evt_dir = outdir / "events"
+    rep_dir = outdir / "report"
 
     timings: dict[str, float] = {}
     t_total0 = time.perf_counter()
@@ -190,7 +207,7 @@ def main(argv: list[str] | None = None) -> int:
     if rc_seg != 0:
         return rc_seg
 
-    # 3. Embed dataset (whenever cost_beta != 0 or detect_events is enabled)
+    # 3. Embed dataset (whenever cost_beta != 0)
     need_embed = float(cfg["cost_beta"]) != 0.0
     if need_embed:
         t0 = time.perf_counter()
@@ -222,6 +239,8 @@ def main(argv: list[str] | None = None) -> int:
         str(cfg["cost_alpha"]),
         "--cost-beta",
         str(cfg["cost_beta"]),
+        "--max-gap",
+        str(cfg["max_gap"]),
         "--split-max-distance",
         str(cfg["split_max_distance"]),
         "--precursor-threshold",
@@ -233,6 +252,12 @@ def main(argv: list[str] | None = None) -> int:
         trk_argv.extend(["--embedding-dir", str(emb_dir)])
     if cfg.get("detect_events"):
         trk_argv.append("--detect-events")
+    if cfg.get("detector_json"):
+        trk_argv.extend(["--detector-json", str(cfg["detector_json"])])
+    if cfg.get("export_imaged11"):
+        trk_argv.extend(["--export-imaged11", str(cfg["export_imaged11"])])
+    if cfg.get("export_nexus") and not cfg.get("detect_events"):
+        trk_argv.extend(["--export-nexus", str(cfg["export_nexus"])])
     trk_argv.extend(str(x) for x in cfg.get("tracking_extra_args", []))
     rc_trk = track_dataset.main(trk_argv)
     timings["track"] = round(time.perf_counter() - t0, 4)
@@ -256,6 +281,8 @@ def main(argv: list[str] | None = None) -> int:
             str(cfg["cost_alpha"]),
             "--cost-beta",
             str(cfg["cost_beta"]),
+            "--max-gap",
+            str(cfg["max_gap"]),
             "--split-max-distance",
             str(cfg["split_max_distance"]),
             "--precursor-threshold",
@@ -272,34 +299,57 @@ def main(argv: list[str] | None = None) -> int:
         if rc_evt != 0:
             return rc_evt
 
-    total_sec = round(time.perf_counter() - t_total0, 4)
-    manifest = {
-        "schema_version": "manifest.v1",
-        "created_at": datetime.now(timezone.utc).isoformat(),
-        "braggtrack_version": braggtrack.__version__,
-        "git_sha": _resolve_git_sha(),
-        "python_version": sys.version.split()[0],
-        "platform": platform.platform(),
-        "dataset_root": str(root.resolve()),
-        "outdir": str(outdir.resolve()),
-        "config": cfg,
-        "inputs": input_files,
-        "stage_timings_sec": timings,
-        "total_duration_sec": total_sec,
-        "artifacts": {
-            "validation_summary": str((outdir / "validation_summary.json").resolve()),
-            "segmentation_summary": str((seg_dir / "segmentation_summary.json").resolve()),
-            "embedding_summary": str((emb_dir / "embedding_summary.json").resolve()) if need_embed else None,
-            "tracking_summary": str((trk_dir / "tracking_summary.json").resolve()),
-            "kinematics_csv": str((trk_dir / "kinematics.csv").resolve()),
-            "kinematics_summary": str((trk_dir / "kinematics_summary.json").resolve()),
-            "events_summary": str((evt_dir / "events_summary.json").resolve()) if cfg.get("detect_events") else None,
-            "events_csv": str((evt_dir / "events.csv").resolve()) if cfg.get("detect_events") else None,
-            "precursors_csv": str((evt_dir / "precursors.csv").resolve()) if cfg.get("detect_events") else None,
-        },
-    }
+    if cfg.get("export_nexus") and cfg.get("detect_events"):
+        from braggtrack.io import DetectorGeometry, export_nexus_process
+
+        dgeom = DetectorGeometry.from_json(cfg["detector_json"]) if cfg.get("detector_json") else None
+        export_nexus_process(outdir, cfg["export_nexus"], geometry=dgeom)
+
     manifest_path = outdir / "run_manifest.json"
-    manifest_path.write_text(json.dumps(manifest, indent=2))
+
+    def _build_manifest(cur_total_sec: float) -> dict[str, Any]:
+        return {
+            "schema_version": "manifest.v1",
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "braggtrack_version": braggtrack.__version__,
+            "git_sha": _resolve_git_sha(),
+            "python_version": sys.version.split()[0],
+            "platform": platform.platform(),
+            "dataset_root": str(root.resolve()),
+            "outdir": str(outdir.resolve()),
+            "config": cfg,
+            "inputs": input_files,
+            "stage_timings_sec": timings,
+            "total_duration_sec": cur_total_sec,
+            "artifacts": {
+                "validation_summary": str((outdir / "validation_summary.json").resolve()),
+                "segmentation_summary": str((seg_dir / "segmentation_summary.json").resolve()),
+                "embedding_summary": str((emb_dir / "embedding_summary.json").resolve()) if need_embed else None,
+                "tracking_summary": str((trk_dir / "tracking_summary.json").resolve()),
+                "kinematics_csv": str((trk_dir / "kinematics.csv").resolve()),
+                "kinematics_summary": str((trk_dir / "kinematics_summary.json").resolve()),
+                "events_summary": str((evt_dir / "events_summary.json").resolve())
+                if cfg.get("detect_events")
+                else None,
+                "events_csv": str((evt_dir / "events.csv").resolve()) if cfg.get("detect_events") else None,
+                "precursors_csv": str((evt_dir / "precursors.csv").resolve()) if cfg.get("detect_events") else None,
+                "html_report": str((rep_dir / "report.html").resolve()) if cfg.get("report") else None,
+            },
+        }
+
+    total_sec = round(time.perf_counter() - t_total0, 4)
+    manifest_path.write_text(json.dumps(_build_manifest(total_sec), indent=2))
+
+    # 6. Optional interactive HTML & static figure report
+    if cfg.get("report"):
+        t0 = time.perf_counter()
+        rc_rep = report_dataset.main([str(outdir), "--dataset-root", str(root), "--outdir", str(rep_dir)])
+        timings["report"] = round(time.perf_counter() - t0, 4)
+        if rc_rep != 0:
+            return rc_rep
+        total_sec = round(time.perf_counter() - t_total0, 4)
+        manifest_path.write_text(json.dumps(_build_manifest(total_sec), indent=2))
+
     print(json.dumps({"manifest": str(manifest_path.resolve()), "total_duration_sec": total_sec}, indent=2))
     return 0
 

@@ -12,6 +12,7 @@ from .cost import CostFunction, PositionShapeCost
 
 if TYPE_CHECKING:
     from .events import SplitMergeConfig
+    from .gap_closing import GapClosingConfig
 
 
 class TrackEvent(str, enum.Enum):
@@ -30,6 +31,7 @@ def build_tracks(
     cost_fn: CostFunction | None = None,
     max_cost: float = float("inf"),
     *,
+    gap_closing_config: GapClosingConfig | None = None,
     split_merge_config: SplitMergeConfig | None = None,
     scan_timestamps: dict[int, str | None] | None = None,
 ) -> nx.DiGraph:
@@ -37,7 +39,8 @@ def build_tracks(
 
     Each node represents a spot observation ``(scan_index, spot_index)``
     and carries the full feature dict plus a ``track_id`` and ``event``
-    attribute.  Edges connect matched spots across consecutive frames, and
+    attribute.  Edges connect matched spots across consecutive frames,
+    optional *gap_closing_config* reconnects missing intermediate scans, and
     optional *split_merge_config* resolves ``1 -> 2+`` splits and ``2+ -> 1``
     merges.
     """
@@ -105,6 +108,16 @@ def build_tracks(
         if nid in G.nodes and G.nodes[nid]["event"] == TrackEvent.CONTINUED:
             # Still alive at end — leave as CONTINUED (not terminated)
             pass
+
+    if gap_closing_config is not None and gap_closing_config.max_gap > 0:
+        from .gap_closing import resolve_track_gaps
+
+        resolve_track_gaps(
+            G,
+            n_scans=n_scans,
+            cost_fn=active_cost,
+            config=gap_closing_config,
+        )
 
     if split_merge_config is not None:
         from .events import resolve_splits_and_merges

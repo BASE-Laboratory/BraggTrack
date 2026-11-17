@@ -146,6 +146,30 @@ class TestSegmentDino(unittest.TestCase):
         result = segment_dino(volume, backend="mock")
         self.assertTrue(np.all(result.labeled_volume >= 0))
 
+    def test_resized_vit_grid_alignment(self) -> None:
+        """Simulate ViT 224x224 image resizing (16x16 tokens) on non-multiple slice shapes."""
+        from unittest.mock import patch
+
+        class _ResizedViTEncoder:
+            patch_size = 14
+            feature_dim = 16
+
+            def extract_patch_features(self, image: np.ndarray) -> np.ndarray:
+                rng = np.random.default_rng(int(np.sum(image > 5.0)))
+                grid = rng.standard_normal((16, 16, 16)).astype(np.float32)
+                grid[10:15, 10:15, :] += 8.0
+                norms = np.linalg.norm(grid, axis=-1, keepdims=True) + 1e-8
+                return grid / norms
+
+        volume = np.zeros((4, 250, 250), dtype=np.float64)
+        volume[1:3, 180:240, 180:240] = 25.0
+        with patch("braggtrack.semantic.dino.make_patch_encoder", return_value=_ResizedViTEncoder()):
+            result = segment_dino(volume, backend="mock", min_cluster_size=2, min_samples=1)
+        self.assertEqual(result.labeled_volume.shape, (4, 250, 250))
+        self.assertGreaterEqual(result.component_count, 1)
+        # Ensure spots near the far corner (> 16 * 14 = 224) receive foreground labels via proportional upsampling
+        self.assertGreater(int(np.count_nonzero(result.labeled_volume[1:3, 225:240, 225:240])), 0)
+
 
 if __name__ == "__main__":
     unittest.main()

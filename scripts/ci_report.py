@@ -131,7 +131,12 @@ def main() -> int:
     )
     evt_ok = evt_ok_cmd and isinstance(evt_payload, dict) and evt_payload.get("failures") == []
 
-    all_ok = unit_ok and acc_ok and smoke_ok and seg_ok and trk_ok and emb_ok and dino_ok and evt_ok
+    rep_ok_cmd, rep_payload, _ = run_cmd_json(
+        [sys.executable, "scripts/check_report_and_export_acceptance.py"], "Report & Export Acceptance"
+    )
+    rep_ok = rep_ok_cmd and isinstance(rep_payload, dict) and rep_payload.get("failures") == []
+
+    all_ok = unit_ok and acc_ok and smoke_ok and seg_ok and trk_ok and emb_ok and dino_ok and evt_ok and rep_ok
     print("\n=== Summary ===")
     print(f"unit_tests={'PASS' if unit_ok else 'FAIL'}")
     print(f"io_acceptance={'PASS' if acc_ok else 'FAIL'}")
@@ -141,6 +146,7 @@ def main() -> int:
     print(f"embedding_acceptance={'PASS' if emb_ok else 'FAIL'}")
     print(f"dino_acceptance={'PASS' if dino_ok else 'FAIL'}")
     print(f"events_acceptance={'PASS' if evt_ok else 'FAIL'}")
+    print(f"report_and_export_acceptance={'PASS' if rep_ok else 'FAIL'}")
     print(f"overall={'PASS' if all_ok else 'FAIL'}")
 
     return 0 if all_ok else 1

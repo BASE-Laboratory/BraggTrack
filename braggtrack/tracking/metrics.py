@@ -53,7 +53,17 @@ def compute_tracking_metrics(
             terminated_count += 1
 
     total_tracks = len(tracks)
-    full_length_tracks = sum(1 for obs in tracks.values() if len(obs) >= n_scans)
+    full_length_tracks = sum(
+        1
+        for obs in tracks.values()
+        if len(obs) >= n_scans
+        or (
+            n_scans > 0
+            and bool(G.graph.get("gap_closures"))
+            and min(int(r["scan_idx"]) for r in obs) == 0
+            and max(int(r["scan_idx"]) for r in obs) >= n_scans - 1
+        )
+    )
     fragmentation_ratio = 1.0 - full_length_tracks / total_tracks if total_tracks > 0 else 0.0
 
     # ID-switch rate (requires ground truth).
@@ -89,6 +99,7 @@ def compute_tracking_metrics(
     lineage_events = G.graph.get("lineage_events", [])
     split_count = sum(1 for ev in lineage_events if getattr(ev, "event_type", None) == "split")
     merge_count = sum(1 for ev in lineage_events if getattr(ev, "event_type", None) == "merge")
+    gap_closed_count = len(G.graph.get("gap_closures", []))
 
     return {
         "total_tracks": total_tracks,
@@ -97,6 +108,7 @@ def compute_tracking_metrics(
         "born_count": born_count,
         "continued_count": continued_count,
         "terminated_count": terminated_count,
+        "gap_closed_count": gap_closed_count,
         "split_count": split_count,
         "merge_count": merge_count,
         "id_switch_count": id_switch_count,

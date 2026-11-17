@@ -2,22 +2,25 @@ cff-version: 1.2.0
 message: "If you use this software, please cite it as below."
 title: "BraggTrack"
 type: software
-version: 0.1.0
+version: 0.3.0
 date-released: "2026-05-16"
 license: MIT
 repository-code: "https://github.com/BASE-Laboratory/BraggTrack"
 url: "https://github.com/BASE-Laboratory/BraggTrack"
 abstract: >-
-  Semantic 4D kinematics and fracture tracking for operando
-  X-ray diffraction. BraggTrack segments Bragg reflections in
-  3D reciprocal-space volumes and tracks them across time using
-  classical image processing and self-supervised vision-transformer
-  embeddings.
+  Semantic 4D kinematics, multi-scan gap closing, and chemomechanical
+  fracture tracking for operando X-ray diffraction. BraggTrack segments
+  Bragg reflections in 3D reciprocal-space volumes, tracks trajectories
+  and split/merge lineage using classical crystallography and
+  vision-transformer embeddings, and exports ImageD11, NeXus HDF5, and
+  interactive HTML 4D lineage reports.
 keywords:
   - X-ray diffraction
   - operando crystallography
   - 3D segmentation
   - object tracking
+  - grain fracture
+  - synchrotron
   - materials science
   - Python
 authors:
