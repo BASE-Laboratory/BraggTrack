@@ -1,8 +1,7 @@
-"""DINO-based 3D segmentation: patch feature clustering + 3D stitching.
+"""Experimental DINO-based 3D segmentation: patch feature clustering + 3D stitching.
 
-Replaces the hand-tuned LoG + watershed pipeline with frozen DINOv3 patch
-features clustered via HDBSCAN, producing instance labels that generalise
-across beamlines and detectors without per-instrument parameter tuning.
+Provides an alternative to the primary classical LoG + watershed pipeline using
+frozen DINOv2/DINOv3 patch features clustered via HDBSCAN.
 """
 
 from __future__ import annotations
@@ -11,6 +10,8 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 import numpy as np
+
+from braggtrack.semantic.dino import DEFAULT_DINO_MODEL
 
 if TYPE_CHECKING:
     from braggtrack.semantic.dino import BackendName, PatchFeatureEncoder
@@ -257,7 +258,7 @@ def segment_dino(
     volume: np.ndarray,
     *,
     backend: BackendName | None = None,
-    model_name: str = "facebook/dinov3-vitb16-pretrain-lvd1689m",
+    model_name: str = DEFAULT_DINO_MODEL,
     torch_device: str | None = None,
     n_components_pca: int = 16,
     min_cluster_size: int = 5,
@@ -266,7 +267,7 @@ def segment_dino(
     min_overlap_fraction: float = 0.2,
     axis: int = 0,
 ) -> DinoSegmentationResult:
-    """Segment a 3D volume using DINOv3 patch-level features + HDBSCAN.
+    """Segment a 3D volume using DINO patch-level features + HDBSCAN.
 
     Parameters
     ----------

@@ -86,6 +86,10 @@ def compute_tracking_metrics(
         n_edges = G.number_of_edges()
         id_switch_rate = id_switch_count / n_edges if n_edges > 0 else 0.0
 
+    lineage_events = G.graph.get("lineage_events", [])
+    split_count = sum(1 for ev in lineage_events if getattr(ev, "event_type", None) == "split")
+    merge_count = sum(1 for ev in lineage_events if getattr(ev, "event_type", None) == "merge")
+
     return {
         "total_tracks": total_tracks,
         "full_length_tracks": full_length_tracks,
@@ -93,6 +97,8 @@ def compute_tracking_metrics(
         "born_count": born_count,
         "continued_count": continued_count,
         "terminated_count": terminated_count,
+        "split_count": split_count,
+        "merge_count": merge_count,
         "id_switch_count": id_switch_count,
         "id_switch_rate": round(id_switch_rate, 4),
     }

@@ -7,15 +7,21 @@ from pathlib import Path
 from typing import Any
 
 from .discovery import ScanFile, discover_operando_scans
-from .models import ExperimentSequence, ScanVolumeMeta
-from .nexus import MissingH5DependencyError, extract_scan_metadata
+from .models import AxisCalibration, ExperimentSequence, ScanVolumeMeta
+from .nexus import (
+    MissingH5DependencyError,
+    discover_primary_volume_path,
+    extract_axis_calibration,
+    extract_scan_metadata,
+)
 
 
 class BeamlineAdapter:
     """Build BraggTrack contracts from local NeXus/HDF5 scan files."""
 
-    def __init__(self, root: str | Path):
+    def __init__(self, root: str | Path, calibration: AxisCalibration | None = None):
         self.root = Path(root)
+        self.calibration = calibration
 
     @staticmethod
     def _parse_scan_index(scan_name: str) -> int:
@@ -41,9 +47,17 @@ class BeamlineAdapter:
     def _scan_to_meta(self, scan_file: ScanFile) -> ScanVolumeMeta:
         metadata: dict[str, Any] = {}
         metadata_error: str | None = None
+        volume_path: str | None = None
+        cal = self.calibration or AxisCalibration()
 
         try:
             metadata = extract_scan_metadata(scan_file.path)
+            if self.calibration is None:
+                cal = extract_axis_calibration(scan_file.path)
+            try:
+                volume_path = discover_primary_volume_path(scan_file.path)
+            except (KeyError, ValueError):
+                volume_path = None
         except MissingH5DependencyError as exc:
             metadata_error = str(exc)
 
@@ -59,6 +73,8 @@ class BeamlineAdapter:
             end_time=self._parse_datetime(metadata.get("end_time")),
             sample_name=metadata.get("sample_name"),
             title=metadata.get("title"),
+            volume_dataset_path=volume_path,
+            calibration=cal,
             extras=extras,
         )
 

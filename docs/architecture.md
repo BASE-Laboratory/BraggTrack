@@ -1,77 +1,100 @@
 # BraggTrack architecture
 
-This document describes how the repository is structured, how data flows through the pipeline, and where to add new functionality.
+This document describes how the repository is structured, how data flows through the pipeline, and where to extend functionality.
 
 ## Repository layout
 
 ```text
 BraggTrack/
-├── braggtrack/           # Installable Python package
-│   ├── io/               # Discovery, NeXus/HDF5, beamline contracts, validation
-│   ├── segmentation/     # Classical 3D segmentation + instance features
-│   ├── semantic/         # Week 4: orthogonal MIPs + frozen ViT embeddings
-│   ├── tracking/         # Costs, vectorised assignment, lifecycle DAG, metrics
-│   └── cli/              # argparse entry points (thin orchestration)
+├── braggtrack/           # Installable Python package (v0.2.0)
+│   ├── io/               # Discovery, ESRF-ID03 / NeXus HDF5 auto-discovery, AxisCalibration, validation
+│   ├── segmentation/     # Classical 3D LoG+watershed, cross-scan threshold smoothing, experimental DINO segmenter, features
+│   ├── semantic/         # Orthogonal (mu, chi, d) MIPs + frozen ViT / patch encoders (DINOv2 default, DINOv3, mock)
+│   ├── tracking/         # Costs, Hungarian assignment, kinematics, split/merge lineage DAG, fracture precursors
+│   └── cli/              # Thin argparse entry points + reproducible run_pipeline orchestrator
 ├── data/
-│   └── sample_operando/  # Bundled scan0001… folders (versioned test data)
-├── docs/                 # Architecture & practices (this file)
-├── scripts/              # CI glue, acceptance runners, ablation utilities
-├── tests/                # unittest discovery
+│   └── sample_operando/  # Bundled ESRF-ID03 Ni-rich cathode operando scans (scan0001..scan0003)
+├── notebooks/            # End-to-end demo and DINO vs. classical segmentation notebooks
+├── docs/                 # Architecture & coding practices
+├── scripts/              # Acceptance gates, semantic ablation with bootstrap CIs, ci_report.py
+├── tests/                # Unit and acceptance test suite
 └── artifacts/            # Generated outputs (gitignored)
 ```
 
 ## Layered design
 
-| Layer | Responsibility | Depends on |
-|--------|----------------|------------|
-| **io** | Find scans, load volumes, map files → `ScanVolumeMeta` / `ExperimentSequence`, validate | `numpy`, optional `h5py` |
-| **segmentation** | Threshold / classical pipeline, instance table (`features.csv` contract) | `numpy`, `scipy`, `skimage` |
-| **semantic** | Per-spot MIPs + encoder (`mock` or Dinov2) | `numpy`, optional `torch` + `transformers` |
-| **tracking** | Pairwise cost matrix (`cdist` + optional `A @ B.T`), Hungarian assignment, DAG | `numpy`, `scipy`, `networkx` |
-| **cli** | Parse args, resolve dataset root, write JSON/CSV/artifacts | All of the above |
+| Layer | Responsibility | Key Types / Functions | Depends on |
+|---|---|---|---|
+| **io** | Discover scans, auto-discover 3D HDF5 cubes, extract timestamps & `AxisCalibration`, validate sequences | `ScanVolumeMeta`, `AxisCalibration`, `load_primary_volume`, `BeamlineAdapter` | `numpy`, `h5py` |
+| **segmentation** | Multi-scan threshold smoothing, 3D LoG + `h`-maxima + watershed (or experimental DINO + HDBSCAN), physical/voxel feature table | `segment_classical`, `smooth_thresholds`, `segment_dino`, `extract_instance_table` | `numpy`, `scipy`, `scikit-image`, `scikit-learn` |
+| **semantic** | Cropped spot cubes, orthogonal MIPs, multi-view global embeddings & dense patch-token grids | `crop_spot_cube`, `orthogonal_mips`, `make_multiview_encoder`, `make_patch_encoder` | `numpy`, optional `torch` + `transformers` |
+| **tracking** | Vectorised geometry + semantic cost, Hungarian assignment, per-grain kinematics, `1 -> 2+` split & `2+ -> 1` merge lineage resolution, persistent fracture precursors | `PositionShapeCost`, `GeometrySemanticCost`, `build_tracks`, `compute_grain_kinematics`, `resolve_splits_and_merges`, `compute_fracture_precursors` | `numpy`, `scipy`, `networkx` |
+| **cli** | Parse args/JSON config, orchestrate stages, write CSV/JSON/NPZ artifacts and SHA-256 `run_manifest.json` | `segment_dataset`, `embed_dataset`, `track_dataset`, `detect_events`, `run_pipeline` | All of the above |
 
-**Rule of thumb:** put **numeric kernels** and **contracts** in subpackages; keep **CLI modules** as small glue.
+**Rule of thumb:** keep **numeric kernels** and **typed data contracts** in subpackages; keep **CLI modules** as thin orchestration layers.
 
-## Data flow (operando week model)
+## Data flow (`braggtrack-run`)
 
 ```mermaid
 flowchart LR
-  subgraph inputs
-    H5[H5 / NeXus volumes]
+  subgraph inputs["Inputs"]
+    H5["HDF5 / NeXus 3D scans"]
+    CAL["AxisCalibration (auto or JSON)"]
   end
-  subgraph week2
-    SEG[segment_dataset]
-    FEAT[features.csv + labels.npz]
+  subgraph seg["Segmentation"]
+    SEG["segment_dataset (smoothed Otsu + 3D watershed)"]
+    FEAT["features.csv + labels.npz"]
   end
-  subgraph week4
-    EMB[embed_dataset]
-    NPZ[embeddings.npz]
+  subgraph sem["Semantic"]
+    EMB["embed_dataset (MIPs + DINOv2 / mock)"]
+    NPZ["embeddings.npz"]
   end
-  subgraph week3_4
-    TRK[track_dataset]
-    DAG[trajectory DAG / tracks.csv]
+  subgraph trk["Tracking & Kinematics"]
+    TRK["track_dataset (Hungarian + kinematics)"]
+    KIN["tracks.csv + kinematics.csv"]
   end
-  H5 --> SEG --> FEAT --> EMB --> NPZ
+  subgraph evt["Lineage & Precursors"]
+    EVT["detect_events (splits, merges, ROI dispersion)"]
+    OUT["events.csv + precursors.csv"]
+  end
+  MAN["run_manifest.json (SHA-256 + timings)"]
+
+  H5 --> SEG
+  CAL --> SEG
+  SEG --> FEAT
+  H5 --> EMB
+  FEAT --> EMB --> NPZ
   FEAT --> TRK
   NPZ --> TRK
-  TRK --> DAG
+  TRK --> KIN
+  H5 --> EVT
+  FEAT --> EVT
+  NPZ --> EVT
+  EVT --> OUT
+  SEG --> MAN
+  TRK --> MAN
+  EVT --> MAN
 ```
 
-- **Dataset root** is always a directory containing `scan*` folders (see `data/sample_operando/README.md`).
-- **Artifacts** under `artifacts/` are reproducible outputs; never commit them.
+- **Dataset root** is a directory containing `scan*` folders (defaults to bundled `data/sample_operando/` when present).
+- **Physical coordinates vs. voxel indices:** `extract_instance_table(..., calibration=cal)` converts `centroid_mu`, `centroid_chi`, `centroid_d`, `cov_*`, and `eig_1..3` into physical reciprocal-space units while preserving integer voxel `bbox_*` indices so downstream 3D ROI cropping (`crop_spot_cube`) remains exact.
+- **Artifacts** under `artifacts/` are reproducible build outputs and are never committed to Git.
 
 ## Extension points
 
-1. **New beamline / file layout** — extend `discover_operando_scans` or add an adapter parallel to `BeamlineAdapter`, keeping `ScanVolumeMeta` as the contract.
-2. **New segmentation** — implement alongside `segment_classical`; feed `extract_instance_table` with `(labels, intensity)`.
-3. **New association cost** — implement `pairwise_cost_matrix` + scalar `__call__` matching `CostFunction` in `braggtrack/tracking/cost.py`; keep gating and `inf` semantics consistent with `associate_frames`.
-4. **New CLI** — add `braggtrack/cli/foo.py`, register in `pyproject.toml` `[project.scripts]` if needed.
+1. **New beamline / HDF5 layout** — add candidate paths to `PRIMARY_VOLUME_CANDIDATES` in `braggtrack/io/nexus.py` (or rely on the built-in largest-3D numeric dataset discovery) and extend `extract_axis_calibration` if custom motor metadata groups are used.
+2. **New segmentation method** — implement alongside `segment_classical` / `segment_dino` returning `ClassicalSegmentationResult`, then feed `(labels, volume, calibration=...)` to `extract_instance_table`.
+3. **New association cost** — implement `pairwise_cost_matrix` + scalar `__call__` matching `CostFunction` in `braggtrack/tracking/cost.py`.
+4. **Custom precursor signals** — extend `compute_fracture_precursors` in `braggtrack/tracking/precursors.py` to incorporate additional morphological or diffraction rocking-curve descriptors while retaining contiguous `min_persistence` filtering.
 
 ## Performance notes
 
-- Assignment builds a dense `(N, M)` cost matrix via **vectorised** geometry (`scipy.spatial.distance.cdist`) and, when enabled, **one GEMM** for cosine similarity (`A @ B.T`). Avoid reintroducing per-pair Python loops on hot paths.
+- Frame-to-frame Hungarian association builds its `(N, M)` cost matrix via vectorised `scipy.spatial.distance.cdist` and a single dense matrix multiplication (`A @ B.T`) for semantic cosine similarity.
+- Cross-scan threshold stabilisation (`smooth_thresholds`) operates in $O(N \cdot W)$ on scalar per-scan Otsu thresholds without holding the entire 4D dataset in memory simultaneously during streaming workflows.
 
 ## Configuration surfaces
 
-- **Env:** `BRAGGTRACK_DINO_BACKEND` (`auto` | `mock` | `torch`) for embeddings.
-- **Paths:** `braggtrack.io.paths.sample_operando_root()` and `resolve_dataset_root()` for bundled vs explicit dataset roots.
+- **Environment variables:**
+  - `BRAGGTRACK_DATA_ROOT`: Override default dataset root discovery.
+  - `BRAGGTRACK_DINO_BACKEND`: Force `auto`, `mock`, or `torch` backend selection.
+- **Pipeline JSON config:** Pass `--config pipeline.json` to `braggtrack-run` to declaratively configure backend, model ID (`DEFAULT_DINO_MODEL = "facebook/dinov2-small"` or DINOv3), calibration file, semantic weights (`cost_alpha`, `cost_beta`), and split/precursor thresholds.

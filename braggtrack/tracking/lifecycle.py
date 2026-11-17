@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import enum
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import networkx as nx
 
 from .assignment import associate_frames
-from .cost import CostFunction
+from .cost import CostFunction, PositionShapeCost
+
+if TYPE_CHECKING:
+    from .events import SplitMergeConfig
 
 
 class TrackEvent(str, enum.Enum):
@@ -24,31 +27,21 @@ def _node_id(scan_idx: int, spot_idx: int) -> str:
 
 def build_tracks(
     scan_tables: list[list[dict]],
-    cost_fn: CostFunction,
+    cost_fn: CostFunction | None = None,
     max_cost: float = float("inf"),
+    *,
+    split_merge_config: SplitMergeConfig | None = None,
+    scan_timestamps: dict[int, str | None] | None = None,
 ) -> nx.DiGraph:
     """Build a trajectory DAG across an ordered sequence of scan tables.
 
     Each node represents a spot observation ``(scan_index, spot_index)``
     and carries the full feature dict plus a ``track_id`` and ``event``
-    attribute.  Edges connect matched spots across consecutive frames.
-
-    Parameters
-    ----------
-    scan_tables : list[list[dict]]
-        Per-scan feature tables (output of :func:`extract_instance_table`).
-    cost_fn : CostFunction
-        Pluggable cost callable (e.g. :class:`PositionShapeCost`).
-    max_cost : float
-        Hard upper bound on acceptable association cost.
-
-    Returns
-    -------
-    nx.DiGraph
-        Directed acyclic graph of spot trajectories.  Node attributes
-        include ``scan_idx``, ``spot_idx``, ``track_id``, ``event``,
-        and all columns from the feature table.
+    attribute.  Edges connect matched spots across consecutive frames, and
+    optional *split_merge_config* resolves ``1 -> 2+`` splits and ``2+ -> 1``
+    merges.
     """
+    active_cost: CostFunction = cost_fn if cost_fn is not None else PositionShapeCost()
     G = nx.DiGraph()
     n_scans = len(scan_tables)
     if n_scans == 0:
@@ -72,7 +65,7 @@ def build_tracks(
         matches, unmatched_t, unmatched_t1 = associate_frames(
             spots_t,
             spots_t1,
-            cost_fn=cost_fn,
+            cost_fn=active_cost,
             max_cost=max_cost,
         )
 
@@ -86,7 +79,7 @@ def build_tracks(
             G.add_node(
                 nid_next, scan_idx=t + 1, spot_idx=i_t1, track_id=tid, event=TrackEvent.CONTINUED, **spots_t1[i_t1]
             )
-            G.add_edge(nid_prev, nid_next)
+            G.add_edge(nid_prev, nid_next, edge_type="continuation")
             new_track_map[i_t1] = tid
 
         # Unmatched in t → TERMINATED (mark on existing node)
@@ -113,6 +106,16 @@ def build_tracks(
             # Still alive at end — leave as CONTINUED (not terminated)
             pass
 
+    if split_merge_config is not None:
+        from .events import resolve_splits_and_merges
+
+        resolve_splits_and_merges(
+            G,
+            n_scans=n_scans,
+            config=split_merge_config,
+            scan_timestamps=scan_timestamps,
+        )
+
     return G
 
 
@@ -122,9 +125,15 @@ def tracks_to_table(G: nx.DiGraph) -> list[dict[str, Any]]:
     Each row contains ``track_id``, ``scan_idx``, ``spot_idx``,
     ``event``, and all feature columns.
     """
+    has_lineage = bool(G.graph.get("lineage_events"))
     rows: list[dict[str, Any]] = []
     for nid in sorted(G.nodes):
         data = dict(G.nodes[nid])
         data["event"] = data["event"].value if isinstance(data["event"], TrackEvent) else data["event"]
+        if has_lineage or "parent_track_ids" in data or "lineage_role" in data:
+            ptids = data.get("parent_track_ids", [])
+            if isinstance(ptids, (list, tuple)):
+                data["parent_track_ids"] = ";".join(str(x) for x in ptids)
+            data.setdefault("lineage_role", "")
         rows.append(data)
     return rows

@@ -35,7 +35,10 @@ def discover_operando_scans(root: str | Path, pattern: str = "pco_nf_*.h5") -> l
     scans: list[ScanFile] = []
 
     for scan_dir in sorted(p for p in root_path.iterdir() if p.is_dir() and p.name.startswith("scan")):
-        for h5_file in sorted(scan_dir.glob(pattern)):
+        matched = sorted(scan_dir.glob(pattern))
+        if not matched and pattern == "pco_nf_*.h5":
+            matched = sorted({*scan_dir.glob("*.h5"), *scan_dir.glob("*.nxs"), *scan_dir.glob("*.hdf5")})
+        for h5_file in matched:
             scans.append(ScanFile(scan_name=scan_dir.name, path=h5_file))
 
     return scans

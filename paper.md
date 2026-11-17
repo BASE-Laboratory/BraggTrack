@@ -6,6 +6,7 @@ tags:
   - operando crystallography
   - 3D segmentation
   - object tracking
+  - grain fracture
   - materials science
 authors:
   - name: James Le Houx
@@ -21,130 +22,132 @@ bibliography: paper.bib
 
 # Summary
 
-BraggTrack is a Python library for automated detection, segmentation, and
-tracking of Bragg diffraction spots across sequential operando X-ray
-diffraction (XRD) volumes. Given a time series of three-dimensional
-reciprocal-space intensity cubes acquired during *in situ* or *operando*
-experiments, BraggTrack segments individual Bragg reflections, extracts
-geometric and semantic features, and links observations across scans into
-persistent tracks with lifecycle annotations (birth, continuation,
-termination). The library combines classical image-processing techniques —
-Laplacian-of-Gaussian (LoG) enhancement, h-maxima seed detection, and seeded
-watershed segmentation — with modern self-supervised vision-transformer
-embeddings that provide shape-aware identity descriptors for robust
-cross-frame association. BraggTrack is designed for synchrotron beamline data
-in NeXus/HDF5 format and ships with bundled sample data from the ESRF ID03
-beamline, a command-line interface for batch processing, and an interactive
-Jupyter notebook that runs on Google Colab without local installation.
+BraggTrack is a Python library for automated 3D segmentation, semantic tracking,
+kinematic strain extraction, and chemomechanical fracture detection across
+sequential operando X-ray diffraction (XRD) volumes. Given a time series of
+three-dimensional reciprocal-space or near-field diffraction cubes acquired
+during *in situ* or *operando* experiments, BraggTrack segments individual
+Bragg reflections, extracts calibrated geometric and foundation vision features,
+and links observations across scans into a directed acyclic trajectory graph
+capturing births, continuations, terminations, `1 -> 2+` grain fracture splits,
+and `2+ -> 1` coalescence merges. In addition, BraggTrack ranks persistent
+pre-fracture precursor candidates across scans by combining 3D reflection
+anisotropy, covariance broadening, internal sub-peak bimodality, and frozen
+vision-transformer patch-token dispersion. Designed for synchrotron NeXus/HDF5
+data, BraggTrack ships with bundled operando scans from ESRF beamline ID03,
+eight CLI entry points including a single-command reproducible pipeline runner
+(`braggtrack-run`), and interactive Jupyter notebooks runnable on Google Colab.
 
 # Statement of Need
 
 Operando diffraction experiments at modern synchrotron sources generate
-thousands of three-dimensional reciprocal-space volumes at sub-second
-cadence, each containing tens to hundreds of Bragg reflections whose
-positions, intensities, and shapes evolve as the sample undergoes
-electrochemical cycling, mechanical loading, or thermal treatment
-[@Simons2015; @Hayashi2019]. Extracting quantitative kinematics — tracking
-which reflection belongs to which crystallographic grain across time, and
-detecting when grains nucleate, fragment, or disappear — is a prerequisite
-for understanding microstructural evolution during battery operation
-[@Finegan2019], additive manufacturing [@Leung2018], or fatigue testing.
+hundreds to thousands of three-dimensional diffraction volumes at sub-minute or
+sub-second cadence, each containing tens to hundreds of Bragg reflections whose
+positions, intensities, and 3D morphologies evolve during electrochemical
+cycling, mechanical loading, or thermal treatment [@Simons2015; @Hayashi2019].
+In battery electrodes such as Ni-rich layered oxides, chemomechanical
+degradation manifests first as anisotropic intragranular strain broadening and
+sub-domain formation before culminating in particle microcracking — observable
+in reciprocal space as reflection broadening followed by `1 -> 2+` peak
+splitting [@Finegan2019]. Quantifying per-grain lattice strain
+($\varepsilon = \Delta d / d_0$), lattice rotation ($\Delta\mu$, $\Delta\chi$),
+and fracture lineage across long scan sequences is essential for linking local
+crystallography to macroscopic failure, as well as for solidification and
+additive manufacturing studies [@Leung2018].
 
-Existing workflows rely on manual inspection, commercial peak-fitting
-packages that treat each frame independently, or bespoke scripts written per
-experiment [@Schmidt2014; @Poulsen2004]. These approaches do not scale to
-the data rates of fourth-generation synchrotron sources, lack temporal
-coherence, and are difficult to reproduce. Three-dimensional X-ray
-diffraction (3DXRD) grain-tracking tools such as those built on
-ImageD11 [@Wright2023] and GrainSpotter [@Schmidt2014] focus on indexing
-lattice orientations rather than tracking segmented intensity blobs through
-time. There is no open-source, pip-installable library that performs both
-segmentation and multi-frame tracking of Bragg spots with an extensible cost
-function.
+Existing workflows rely on frame-by-frame peak fitting, bespoke experiment
+scripts, or crystallographic indexing packages such as GrainSpotter
+[@Schmidt2014], 3DXRD orientation mappers [@Poulsen2004], and ImageD11
+[@Wright2023] that focus on unit-cell orientation indexing rather than tracking
+evolving, splitting, and broadening 3D intensity distributions through time.
+Previously, researchers lacked an open-source, `pip`-installable toolkit
+combining stabilised 3D spot segmentation, foundation-model visual descriptors,
+calibrated per-grain kinematics, and explicit split/merge fracture lineage in a
+reproducible software architecture.
 
-BraggTrack fills this gap. It provides a reproducible pipeline from raw HDF5
-volumes to labelled tracks, with a modular architecture that separates
-segmentation, feature extraction, cost-function design, and assignment into
-independently testable layers. Researchers can swap in different segmentation
-backends, plug in real or mock vision-transformer encoders, and tune the
-geometry-versus-semantics tradeoff without modifying core tracking logic.
+BraggTrack addresses this need by separating beamline HDF5 ingestion and axis
+calibration, 3D instance segmentation, multi-view vision-transformer encoding,
+Hungarian and topological lineage tracking, and fracture precursor scoring into
+cleanly tested, modular layers.
 
 # Implementation
 
-## Segmentation
+## Beamline ingestion and physical axis calibration
 
-BraggTrack's classical segmentation pipeline operates on each 3D intensity
-volume independently:
+BraggTrack discovers sequential `scan*` directories, inspects NeXus/HDF5 trees
+(including ESRF-ID03 LIMA detector hierarchies under `/entry_0000/...` and
+generic HDF5 layouts via automatic largest-3D numeric dataset discovery), and
+validates timestamp monotonicity. An `AxisCalibration` transform converts raw
+detector indices into physical reciprocal-space coordinates
+$(\mu, \chi, d)$ via HDF5 axis metadata or JSON/CLI calibration parameters while
+preserving integer voxel bounding boxes for lossless 3D region-of-interest (ROI)
+cropping. This ensures crystallographic strain $\Delta d / d_0$ is invariant to
+detector window cropping.
 
-1. **Foreground thresholding.** An Otsu threshold [@Otsu1979] computed on
-   the raw intensity histogram defines the foreground mask. For multi-frame
-   sequences, per-frame thresholds are smoothed with a rolling median to
-   suppress sensitivity to transient beam drops or detector artefacts.
+## Stabilised 3D segmentation
 
-2. **LoG enhancement.** The volume is convolved with a Gaussian kernel and
-   the negative discrete Laplacian is taken, producing a response map in
-   which Bragg peaks appear as local maxima [@Lindeberg1998].
+BraggTrack's primary segmentation pipeline processes 3D volumes in four stages:
 
-3. **Seed detection.** H-maxima filtering [@Soille2003] on the LoG response
-   selects seed points that exceed both a fraction of a robust peak
-   reference (99.99th percentile, not the absolute maximum, to avoid
-   instability from single bright voxels) and a configurable response
-   percentile within the foreground. Non-maximum suppression enforces a
-   minimum separation between seeds.
+1. **Stabilised foreground thresholding.** Per-scan Otsu thresholds [@Otsu1979]
+   on raw intensity histograms are smoothed across scans with a rolling median
+   (`smooth_thresholds`) and checked for median-absolute-deviation outliers,
+   eliminating spot-count jitter caused by transient beam fluctuations.
 
-4. **Seeded watershed.** Seeds are grown into labelled regions via the
-   watershed transform [@Vincent1991] over the inverted LoG response,
-   restricted to the intensity-domain foreground mask. Post-processing
-   removes small components, fills holes, and relabels sequentially.
+2. **3D LoG enhancement.** Gaussian smoothing followed by the negative discrete
+   Laplacian highlights Bragg reflections as local maxima [@Lindeberg1998]
+   independently of intensity-domain foreground masking.
 
-This separation of intensity-domain thresholding from response-domain seed
-detection avoids a common pitfall in which an Otsu threshold calibrated for
-raw intensities is applied to the LoG response, whose dynamic range and
-distribution are fundamentally different.
+3. **Robust seed detection.** `h`-maxima filtering [@Soille2003] selects seeds
+   exceeding both a fraction of the 99.99th-percentile foreground response and a
+   high response percentile with non-maximum suppression.
 
-## Feature extraction and semantic descriptors
+4. **Seeded watershed and basin refinement.** Watershed region growing
+   [@Vincent1991] over the inverted LoG response is followed by small-object
+   removal, 3D hole filling, and optional nearby-centroid merging to prevent
+   over-segmentation of mosaic reflections. An experimental dense patch-feature
+   + HDBSCAN slice-stitching segmenter (`segment_dino`) is also provided for
+   cross-method comparison.
 
-For each segmented instance, BraggTrack computes an intensity-weighted
-centroid (in the $\mu$, $\chi$, $d$ reciprocal-space convention), a bounding
-box, voxel count, integrated intensity, covariance tensor, and principal-axis
-eigenvalues. These geometric features feed a `PositionShapeCost` function
-that combines squared centroid distance with squared eigenvalue distance and
-supports per-axis gating.
+## Multi-view semantic descriptors
 
-Optionally, each instance is cropped and masked, and three orthogonal
-maximum-intensity projections (MIPs) are computed. These 2D views are
-encoded by a frozen DINOv2 vision transformer [@Oquab2024] into a 384-d unit
-embedding vector that captures shape and texture information invariant to
-minor intensity fluctuations. A `GeometrySemanticCost` function composes the
-geometric and semantic terms as $\alpha \cdot C_\text{geo}(i,j) + \beta
-\cdot (1 - \cos(\mathbf{f}_i, \mathbf{f}_j))$, allowing researchers to
-ablate the contribution of each modality.
+Each segmented 3D reflection is cropped, masked to its instance support, and
+projected into three orthogonal maximum-intensity projections (MIPs) along
+$\mu$, $\chi$, and $d$. By default, BraggTrack encodes these views using the
+public, ungated DINOv2 vision transformer (`facebook/dinov2-small`)
+[@Oquab2024] into an $L_2$-normalised 384-d descriptor, while also supporting
+newer DINOv3 backbones (`facebook/dinov3-vitb16-pretrain-lvd1689m`) via dynamic
+prefix/register token handling and a deterministic hash-based `mock` encoder for
+zero-GPU continuous integration.
 
-A deterministic mock encoder (hash-based) is provided for environments
-without GPU access, enabling full pipeline execution in continuous
-integration and on Google Colab.
+## Tracking, kinematics, and chemomechanical fracture events
 
-## Tracking and lifecycle
+Frame-to-frame 1-to-1 association solves the gated Hungarian assignment problem
+[@Kuhn1955] over $\alpha \cdot C_{\text{geo}}(i, j) + \beta \cdot (1 -
+\cos(\mathbf{f}_i, \mathbf{f}_j))$, constructing a NetworkX [@Hagberg2008]
+`DiGraph`. From each trajectory, `compute_grain_kinematics` extracts time-series
+strain $\Delta d / d_0$, rocking/azimuthal misorientation, integrated intensity
+and volume evolution, and 3D eigenvalue anisotropy.
 
-Cross-frame association is performed by the Hungarian algorithm
-[@Kuhn1955] on the cost matrix between consecutive scans.
-Unmatched observations are marked as births (new reflections entering the
-diffraction condition) or terminations (reflections leaving), while matched
-pairs are continuations. The result is a directed acyclic graph (DAG)
-implemented as a NetworkX [@Hagberg2008] `DiGraph`, where each node carries
-a `TrackEvent` annotation and each edge represents a temporal link. Metrics
-including fragmentation ratio, ID-switch rate, and full-length track count
-are computed from the graph.
+To capture grain fracture and coalescence, `resolve_splits_and_merges` augments
+unmatched birth and termination nodes with explicit `1 -> 2+` split and
+`2+ -> 1` merge edges gated by spatial proximity, integrated-intensity
+conservation ($I_{\text{children}} / I_{\text{parent}}$), and minimum fragment
+intensity share, assigning clean daughter track IDs so diverging post-fracture
+strains are tracked independently. Complementarily,
+`compute_fracture_precursors` scores pre-split intragranular degradation across
+contiguous scans (`min_persistence`) using 3D eigenvalue anisotropy, covariance
+trace growth, internal 3D sub-peak bimodality, and foreground DINO patch-token
+cosine dispersion.
 
 ## Reproducibility and deployment
 
-BraggTrack is packaged as a standard Python project (`pip install
-braggtrack`) with optional dependency groups for PyTorch-based encoders and
-notebook execution. Six CLI entry points expose every pipeline stage. A
-GitHub Actions CI pipeline tests across Python 3.10–3.12, enforces Ruff
-linting and formatting, and executes the demo notebook end-to-end. Bundled
-ESRF-ID03 sample data (three 100×250×250 uint16 volumes) allows immediate
-experimentation without external data downloads.
+BraggTrack (`pip install braggtrack`) provides eight CLI commands, culminating
+in `braggtrack-run`, which executes validation, segmentation, embedding,
+tracking, kinematics, and event detection and writes a `run_manifest.json`
+recording SHA-256 input checksums, configuration, software version, and per-stage
+runtimes. Automated CI tests Python 3.10–3.12, enforces Ruff linting/formatting,
+runs seven acceptance gates (`scripts/ci_report.py`), and executes the tutorial
+notebook end-to-end on bundled ESRF-ID03 data.
 
 # Acknowledgements
 

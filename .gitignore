@@ -7,3 +7,6 @@ build/
 artifacts/
 .ipynb_checkpoints/
 _braggtrack_repo/
+.coverage
+.pytest_cache/
+.ruff_cache/

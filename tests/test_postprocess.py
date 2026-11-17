@@ -4,7 +4,7 @@ import unittest
 
 import numpy as np
 
-from braggtrack.segmentation import fill_holes_binary, relabel_sequential, remove_small_objects
+from braggtrack.segmentation import fill_holes_binary, merge_nearby_labels, relabel_sequential, remove_small_objects
 
 
 class RemoveSmallObjectsTests(unittest.TestCase):
@@ -90,6 +90,24 @@ class RelabelSequentialTests(unittest.TestCase):
         labels = np.zeros((3, 3, 3), dtype=int)
         out = relabel_sequential(labels)
         self.assertTrue(np.all(out == 0))
+
+
+class MergeNearbyLabelsTests(unittest.TestCase):
+    def test_merges_touching_close_labels(self) -> None:
+        labels = np.zeros((6, 6, 6), dtype=np.int32)
+        labels[2, 2, 1:3] = 1
+        labels[2, 2, 3:5] = 2
+        vol = np.ones((6, 6, 6), dtype=np.float64) * 10.0
+        merged = relabel_sequential(merge_nearby_labels(labels, vol, max_centroid_distance=5.0))
+        self.assertEqual(sorted(np.unique(merged)), [0, 1])
+
+    def test_keeps_separated_labels_distinct(self) -> None:
+        labels = np.zeros((6, 6, 8), dtype=np.int32)
+        labels[2, 2, 0:2] = 1
+        labels[2, 2, 6:8] = 2  # non-adjacent
+        vol = np.ones((6, 6, 8), dtype=np.float64) * 10.0
+        merged = relabel_sequential(merge_nearby_labels(labels, vol, max_centroid_distance=20.0))
+        self.assertEqual(sorted(np.unique(merged)), [0, 1, 2])
 
 
 if __name__ == "__main__":
