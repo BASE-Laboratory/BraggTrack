@@ -68,11 +68,17 @@ def extract_instance_table(
             dz = (z_coords - cz) * calibration.mu_step
             dy = (y_coords - cy) * calibration.d_step
             dx = (x_coords - cx) * calibration.chi_step
+            step_mu = abs(calibration.mu_step)
+            step_d = abs(calibration.d_step)
+            step_chi = abs(calibration.chi_step)
         else:
             c_mu, c_chi, c_d = cz, cx, cy
             dz = z_coords - cz
             dy = y_coords - cy
             dx = x_coords - cx
+            step_mu = 1.0
+            step_d = 1.0
+            step_chi = 1.0
 
         # Weighted covariance (same weight logic)
         if sum_i > 0:
@@ -86,6 +92,16 @@ def extract_instance_table(
         czy = float(np.dot(w, dz * dy))
         czx = float(np.dot(w, dz * dx))
         cyx = float(np.dot(w, dy * dx))
+
+        # Analytical 1-sigma centroid standard error: under Poisson photon statistics
+        # Var(c) = cov / sum_i; when intensities are normalized (< n_eff), fall back to
+        # Kish effective sample size n_eff = 1 / sum(w_k^2), floored by voxel quantization.
+        w_sq = float(np.dot(w, w))
+        n_eff = (1.0 / w_sq) if w_sq > 0.0 else float(max(1, count))
+        eff_denom = max(sum_i, n_eff, 1.0)
+        c_mu_err = float(np.sqrt(max(czz, (step_mu**2) / 12.0) / eff_denom))
+        c_chi_err = float(np.sqrt(max(cxx, (step_chi**2) / 12.0) / eff_denom))
+        c_d_err = float(np.sqrt(max(cyy, (step_d**2) / 12.0) / eff_denom))
 
         cov = np.array(
             [
@@ -105,6 +121,9 @@ def extract_instance_table(
                 "centroid_mu": c_mu,
                 "centroid_chi": c_chi,
                 "centroid_d": c_d,
+                "centroid_mu_err": c_mu_err,
+                "centroid_chi_err": c_chi_err,
+                "centroid_d_err": c_d_err,
                 "bbox_min_z": int(z_coords.min()),
                 "bbox_max_z": int(z_coords.max()),
                 "bbox_min_y": int(y_coords.min()),

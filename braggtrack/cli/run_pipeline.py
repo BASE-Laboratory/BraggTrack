@@ -51,6 +51,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--detector-json", default=None, help="Optional DetectorGeometry JSON path for (2theta, eta, Q)"
     )
+    parser.add_argument(
+        "--operando-log",
+        default=None,
+        help="Optional external operando CSV/TSV/Biologic .mpt log to synchronize with diffraction scans",
+    )
     parser.add_argument("--cost-alpha", type=float, default=1.0, help="Geometry weight in semantic cost")
     parser.add_argument("--cost-beta", type=float, default=0.25, help="Semantic embedding weight in tracking cost")
     parser.add_argument("--max-gap", type=int, default=0, help="Max missing intermediate scans to bridge (0 disables)")
@@ -114,6 +119,7 @@ def _merge_config_overrides(args: argparse.Namespace) -> dict[str, Any]:
         "smooth_window": args.smooth_window,
         "calibration_json": args.calibration_json,
         "detector_json": args.detector_json,
+        "operando_log": args.operando_log,
         "cost_alpha": args.cost_alpha,
         "cost_beta": args.cost_beta,
         "max_gap": args.max_gap,
@@ -169,6 +175,23 @@ def main(argv: list[str] | None = None) -> int:
     if any(issue.level == "error" for issue in issues):
         print(json.dumps({"error": "Dataset validation failed", "issues": val_payload["issues"]}))
         return 1
+
+    # Optional external operando stimulus synchronization
+    stim_points = None
+    if cfg.get("operando_log"):
+        from braggtrack.io import load_operando_log, synchronize_to_scans
+
+        op_log = load_operando_log(str(cfg["operando_log"]))
+        stim_points = synchronize_to_scans(op_log, sequence)
+        (outdir / "operando_stimulus.json").write_text(
+            json.dumps(
+                {
+                    "source_path": str(Path(str(cfg["operando_log"])).resolve()),
+                    "scans": [pt.to_dict() for pt in stim_points],
+                },
+                indent=2,
+            )
+        )
 
     # Compute input checksums
     discovered = discover_operando_scans(root)
@@ -299,6 +322,15 @@ def main(argv: list[str] | None = None) -> int:
         if rc_evt != 0:
             return rc_evt
 
+    if stim_points is not None:
+        from braggtrack.cli._utils import load_feature_csv, write_csv
+        from braggtrack.io import annotate_tracks_with_stimulus
+
+        for target_csv in (trk_dir / "tracks.csv", evt_dir / "tracks.csv", trk_dir / "kinematics.csv"):
+            if target_csv.exists() and target_csv.stat().st_size > 0:
+                enriched_rows = annotate_tracks_with_stimulus(load_feature_csv(target_csv), stim_points)
+                write_csv(target_csv, enriched_rows)
+
     if cfg.get("export_nexus") and cfg.get("detect_events"):
         from braggtrack.io import DetectorGeometry, export_nexus_process
 
@@ -323,6 +355,9 @@ def main(argv: list[str] | None = None) -> int:
             "total_duration_sec": cur_total_sec,
             "artifacts": {
                 "validation_summary": str((outdir / "validation_summary.json").resolve()),
+                "operando_stimulus": str((outdir / "operando_stimulus.json").resolve())
+                if stim_points is not None
+                else None,
                 "segmentation_summary": str((seg_dir / "segmentation_summary.json").resolve()),
                 "embedding_summary": str((emb_dir / "embedding_summary.json").resolve()) if need_embed else None,
                 "tracking_summary": str((trk_dir / "tracking_summary.json").resolve()),
@@ -343,7 +378,10 @@ def main(argv: list[str] | None = None) -> int:
     # 6. Optional interactive HTML & static figure report
     if cfg.get("report"):
         t0 = time.perf_counter()
-        rc_rep = report_dataset.main([str(outdir), "--dataset-root", str(root), "--outdir", str(rep_dir)])
+        rep_argv = [str(outdir), "--dataset-root", str(root), "--outdir", str(rep_dir)]
+        if cfg.get("operando_log"):
+            rep_argv.extend(["--operando-log", str(cfg["operando_log"])])
+        rc_rep = report_dataset.main(rep_argv)
         timings["report"] = round(time.perf_counter() - t0, 4)
         if rc_rep != 0:
             return rc_rep

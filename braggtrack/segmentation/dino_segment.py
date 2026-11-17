@@ -41,11 +41,11 @@ def _extract_slice_features(
     pixel-level ``(H, W)`` of each slice.
     """
     n_slices = volume.shape[axis]
-    feature_maps: list[np.ndarray] = []
-    for i in range(n_slices):
-        slc = np.take(volume, i, axis=axis)
-        fmap = encoder.extract_patch_features(slc)
-        feature_maps.append(fmap)
+    slices = [np.take(volume, i, axis=axis) for i in range(n_slices)]
+    if hasattr(encoder, "extract_patch_features_batch"):
+        feature_maps = encoder.extract_patch_features_batch(slices)
+    else:
+        feature_maps = [encoder.extract_patch_features(slc) for slc in slices]
 
     if axis == 0:
         slice_hw = (volume.shape[1], volume.shape[2])

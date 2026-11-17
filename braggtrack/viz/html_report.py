@@ -148,6 +148,7 @@ def build_explorer_payload(
     artifact_dir: str | Path,
     *,
     dataset_root: str | Path | None = None,
+    operando_log: str | Path | None = None,
     max_mip_tracks: int = 16,
 ) -> dict[str, Any]:
     """Assemble structured JSON payload for the interactive 4D explorer from pipeline/tracking outputs."""
@@ -256,6 +257,30 @@ def build_explorer_payload(
     if n_scans == 0 and track_rows:
         n_scans = max(int(r["scan_idx"]) for r in track_rows) + 1
 
+    # Load synchronized operando stimulus from explicit log path or saved artifact JSON
+    stimuli_list: list[dict[str, Any]] = []
+    saved_stim = _read_json(root / "operando_stimulus.json")
+    if operando_log is not None:
+        from braggtrack.io import BeamlineAdapter, load_operando_log, synchronize_to_scans
+
+        op_log = load_operando_log(operando_log)
+        if ds_root is not None and ds_root.is_dir():
+            try:
+                seq = BeamlineAdapter(ds_root).build_sequence()
+                pts = (
+                    synchronize_to_scans(op_log, seq)
+                    if len(seq.scans) == n_scans
+                    else synchronize_to_scans(op_log, n_scans)
+                )
+            except Exception:
+                pts = synchronize_to_scans(op_log, n_scans)
+        else:
+            pts = synchronize_to_scans(op_log, n_scans)
+        stimuli_list = [p.to_dict() for p in pts]
+    elif isinstance(saved_stim, dict) and isinstance(saved_stim.get("scans"), list):
+        stimuli_list = list(saved_stim["scans"])
+    stim_by_scan = {int(s["scan_idx"]): s for s in stimuli_list if "scan_idx" in s}
+
     priority_tids = sorted(
         by_tid.keys(),
         key=lambda tid: (
@@ -279,6 +304,16 @@ def build_explorer_payload(
         for idx_o, o in enumerate(obs_sorted):
             s_i = int(o["scan_idx"])
             strain_pct = float(gk.strain[idx_o] * 100.0) if gk is not None and idx_o < len(gk.strain) else 0.0
+            lin_strain_pct = (
+                float(gk.lineage_strain[idx_o] * 100.0)
+                if gk is not None and idx_o < len(gk.lineage_strain)
+                else strain_pct
+            )
+            strain_err_pct = (
+                float(gk.lineage_strain_err[idx_o] * 100.0)
+                if gk is not None and idx_o < len(gk.lineage_strain_err)
+                else 0.0
+            )
             miso = (
                 float(gk.misorientation_total[idx_o])
                 if gk is not None and idx_o < len(gk.misorientation_total)
@@ -286,6 +321,7 @@ def build_explorer_payload(
             )
             aniso = float(gk.anisotropy[idx_o]) if gk is not None and idx_o < len(gk.anisotropy) else 1.0
             po = prec_obs_by_key.get((tid, s_i), {})
+            stim = stim_by_scan.get(s_i, {})
             obs_items.append(
                 {
                     "scan_idx": s_i,
@@ -296,6 +332,12 @@ def build_explorer_payload(
                     "intensity": round(float(o.get("integrated_intensity", 0.0)), 2),
                     "voxels": int(o.get("voxel_count", 0)),
                     "strain_pct": round(strain_pct, 4),
+                    "lineage_strain_pct": round(lin_strain_pct, 4),
+                    "strain_err_pct": round(strain_err_pct, 4),
+                    "voltage_v": stim.get("voltage_v"),
+                    "dq_dv": stim.get("dq_dv"),
+                    "stress_mpa": stim.get("stress_mpa"),
+                    "temperature_c": stim.get("temperature_c"),
                     "misorientation": round(miso, 4),
                     "anisotropy": round(aniso, 3),
                     "precursor_score": round(float(po.get("score", 0.0)), 4),
@@ -308,12 +350,13 @@ def build_explorer_payload(
         tracks_payload.append(
             {
                 "track_id": tid,
+                "root_track_id": gk.root_track_id if gk is not None and gk.root_track_id > 0 else tid,
                 "is_full": is_full,
                 "has_gap": has_gap,
                 "is_split": tid in split_tids,
                 "is_merge": tid in merge_tids,
                 "is_precursor": tid in prec_tids,
-                "max_abs_strain_pct": round(max((abs(x["strain_pct"]) for x in obs_items), default=0.0), 4),
+                "max_abs_strain_pct": round(max((abs(x["lineage_strain_pct"]) for x in obs_items), default=0.0), 4),
                 "max_precursor": round(max((x["precursor_score"] for x in obs_items), default=0.0), 4),
                 "observations": obs_items,
             }
@@ -330,7 +373,7 @@ def build_explorer_payload(
         "calibrated_axes": bool(trk_summary.get("calibrated_axes", False)),
         "backend": evt_summary.get("backend") or manifest.get("config", {}).get("backend") or "n/a",
         "model": evt_summary.get("model") or manifest.get("config", {}).get("model") or "n/a",
-        "braggtrack_version": manifest.get("braggtrack_version", "0.3.0"),
+        "braggtrack_version": manifest.get("braggtrack_version", "0.4.0"),
         "total_duration_sec": manifest.get("total_duration_sec"),
         "kpis": {
             "total_tracks": len(tracks_payload),
@@ -340,6 +383,7 @@ def build_explorer_payload(
             "merge_count": sum(1 for e in events_list if e["event_type"] == "merge"),
             "precursor_count": len(precursors_list),
         },
+        "stimuli": stimuli_list,
         "tracks": tracks_payload,
         "events": events_list,
         "precursors": precursors_list,
@@ -509,10 +553,13 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
     const lane = new Map(tracks.map((t, idx) => [t.track_id, padT + idx * rowH]));
 
     let svg = `<svg width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">`;
+    const stimMap = new Map((DATA.stimuli || []).map(st => [st.scan_idx, st]));
     for (let s = 0; s < nScans; s++) {
       const x = xOf(s);
+      const st = stimMap.get(s);
+      const vTag = (st && st.voltage_v != null) ? ` (${Number(st.voltage_v).toFixed(2)}V)` : '';
       svg += `<line x1="${x}" y1="${padT - 10}" x2="${x}" y2="${height - 16}" stroke="var(--border)" stroke-dasharray="3,3" stroke-width="1"/>`;
-      svg += `<text x="${x}" y="15" text-anchor="middle">${DATA.scan_names[s] || ('S' + s)}</text>`;
+      svg += `<text x="${x}" y="15" text-anchor="middle">${(DATA.scan_names[s] || ('S' + s)) + vTag}</text>`;
     }
 
     // Event edges
@@ -543,8 +590,11 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
         else if (t.is_merge) fill = 'var(--merge)';
         else if (t.is_precursor) fill = 'var(--prec)';
         const r = isSel ? 6 : 4.6;
+        const linS = o.lineage_strain_pct != null ? o.lineage_strain_pct : o.strain_pct;
+        const errS = o.strain_err_pct ? `±${o.strain_err_pct}` : '';
+        const vInfo = o.voltage_v != null ? ` | V=${Number(o.voltage_v).toFixed(3)}V` : '';
         svg += `<circle class="node-dot" data-tid="${t.track_id}" cx="${xOf(o.scan_idx)}" cy="${y}" r="${r}" fill="${fill}" stroke="#0f172a" stroke-width="1">
-          <title>T${t.track_id} @ scan ${o.scan_idx} | strain=${o.strain_pct}% | I=${o.intensity} | prec=${o.precursor_score}</title>
+          <title>T${t.track_id} @ scan ${o.scan_idx}${vInfo} | root_strain=${linS}${errS}% | I=${o.intensity} | prec=${o.precursor_score}</title>
         </circle>`;
       });
     });
@@ -592,18 +642,21 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
       mipsEl.innerHTML = '';
       return;
     }
-    titleEl.textContent = `Track T${t.track_id} (${t.observations.length} observations)`;
+    const rootNote = (t.root_track_id && t.root_track_id !== t.track_id) ? ` [root T${t.root_track_id}]` : '';
+    titleEl.textContent = `Track T${t.track_id}${rootNote} (${t.observations.length} observations)`;
     const badges = [];
     if (t.is_split) badges.push('<span class="badge b-split">Split Lineage</span>');
     if (t.is_merge) badges.push('<span class="badge b-merge">Merge Lineage</span>');
     if (t.is_precursor) badges.push('<span class="badge b-prec">Precursor</span>');
     badgeEl.innerHTML = badges.join(' ');
 
-    const strainPts = t.observations.map(o => [o.scan_idx, o.strain_pct]);
+    const vPts = (DATA.stimuli || []).filter(s => s.voltage_v != null).map(s => [s.scan_idx, Number(s.voltage_v)]);
+    const strainPts = t.observations.map(o => [o.scan_idx, o.lineage_strain_pct != null ? o.lineage_strain_pct : o.strain_pct]);
     const intPts = t.observations.map(o => [o.scan_idx, o.intensity]);
     const precPts = t.observations.map(o => [o.scan_idx, o.precursor_score]);
     chartsEl.innerHTML =
-      sparkSvg(strainPts, 'var(--primary)', 'Relative d-shift / Strain (%)') +
+      (vPts.length ? sparkSvg(vPts, 'var(--gap)', 'Operando Potential E (V)') : '') +
+      sparkSvg(strainPts, 'var(--primary)', 'Ancestor-Referenced Strain (%)') +
       sparkSvg(intPts, 'var(--merge)', 'Integrated Intensity') +
       sparkSvg(precPts, 'var(--prec)', 'Fracture Precursor Score [0, 1]');
 
@@ -680,6 +733,7 @@ def generate_html_report(
     out_html: str | Path | None = None,
     *,
     dataset_root: str | Path | None = None,
+    operando_log: str | Path | None = None,
     max_mip_tracks: int = 16,
 ) -> Path:
     """Render a self-contained interactive HTML 4D explorer from a BraggTrack output directory."""
@@ -687,7 +741,12 @@ def generate_html_report(
     dest = Path(out_html) if out_html is not None else (root / "report.html")
     dest.parent.mkdir(parents=True, exist_ok=True)
 
-    payload = build_explorer_payload(root, dataset_root=dataset_root, max_mip_tracks=max_mip_tracks)
+    payload = build_explorer_payload(
+        root,
+        dataset_root=dataset_root,
+        operando_log=operando_log,
+        max_mip_tracks=max_mip_tracks,
+    )
     safe_json = json.dumps(payload).replace("</", "<\\/")
     html_doc = _HTML_TEMPLATE.replace("__TITLE__", html.escape(str(payload["title"]))).replace(
         "__PAYLOAD_JSON__", safe_json

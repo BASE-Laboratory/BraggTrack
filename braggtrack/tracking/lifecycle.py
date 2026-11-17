@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Any
 
 import networkx as nx
 
-from .assignment import associate_frames
+from .assignment import associate_frames, compute_assignment_margins
 from .cost import CostFunction, PositionShapeCost
 
 if TYPE_CHECKING:
@@ -56,7 +56,15 @@ def build_tracks(
     track_map: dict[int, int] = {}  # spot_idx -> track_id for current frame
     for idx, spot in enumerate(scan_tables[0]):
         nid = _node_id(0, idx)
-        G.add_node(nid, scan_idx=0, spot_idx=idx, track_id=next_track_id, event=TrackEvent.BORN, **spot)
+        G.add_node(
+            nid,
+            scan_idx=0,
+            spot_idx=idx,
+            track_id=next_track_id,
+            event=TrackEvent.BORN,
+            assignment_margin=float("inf"),
+            **spot,
+        )
         track_map[idx] = next_track_id
         next_track_id += 1
 
@@ -71,6 +79,7 @@ def build_tracks(
             cost_fn=active_cost,
             max_cost=max_cost,
         )
+        margins = compute_assignment_margins(spots_t, spots_t1, matches, active_cost)
 
         new_track_map: dict[int, int] = {}
 
@@ -79,10 +88,23 @@ def build_tracks(
             tid = track_map[i_t]
             nid_prev = _node_id(t, i_t)
             nid_next = _node_id(t + 1, i_t1)
+            c_ij, margin = margins.get((i_t, i_t1), (0.0, float("inf")))
             G.add_node(
-                nid_next, scan_idx=t + 1, spot_idx=i_t1, track_id=tid, event=TrackEvent.CONTINUED, **spots_t1[i_t1]
+                nid_next,
+                scan_idx=t + 1,
+                spot_idx=i_t1,
+                track_id=tid,
+                event=TrackEvent.CONTINUED,
+                assignment_margin=margin,
+                **spots_t1[i_t1],
             )
-            G.add_edge(nid_prev, nid_next, edge_type="continuation")
+            G.add_edge(
+                nid_prev,
+                nid_next,
+                edge_type="continuation",
+                cost=c_ij,
+                assignment_margin=margin,
+            )
             new_track_map[i_t1] = tid
 
         # Unmatched in t → TERMINATED (mark on existing node)
@@ -94,7 +116,13 @@ def build_tracks(
         for i_t1 in unmatched_t1:
             nid = _node_id(t + 1, i_t1)
             G.add_node(
-                nid, scan_idx=t + 1, spot_idx=i_t1, track_id=next_track_id, event=TrackEvent.BORN, **spots_t1[i_t1]
+                nid,
+                scan_idx=t + 1,
+                spot_idx=i_t1,
+                track_id=next_track_id,
+                event=TrackEvent.BORN,
+                assignment_margin=float("inf"),
+                **spots_t1[i_t1],
             )
             new_track_map[i_t1] = next_track_id
             next_track_id += 1

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+from collections.abc import Sequence
 from typing import Any, Literal, Protocol
 
 import numpy as np
@@ -87,14 +88,31 @@ def _mips_to_rgb_uint8(mip: np.ndarray) -> np.ndarray:
 class MultiviewEncoder(Protocol):
     def embed(self, mip_mu: np.ndarray, mip_chi: np.ndarray, mip_d: np.ndarray) -> np.ndarray: ...
 
+    def embed_batch(
+        self,
+        mips_list: Sequence[tuple[np.ndarray, np.ndarray, np.ndarray]],
+        *,
+        batch_size: int = 32,
+    ) -> np.ndarray: ...
+
 
 class MockMultiviewEncoder:
     def embed(self, mip_mu: np.ndarray, mip_chi: np.ndarray, mip_d: np.ndarray) -> np.ndarray:
         return _mock_embedding_from_mips(mip_mu, mip_chi, mip_d)
 
+    def embed_batch(
+        self,
+        mips_list: Sequence[tuple[np.ndarray, np.ndarray, np.ndarray]],
+        *,
+        batch_size: int = 32,
+    ) -> np.ndarray:
+        if not mips_list:
+            return np.zeros((0, 384), dtype=np.float32)
+        return np.stack([self.embed(m0, m1, m2) for m0, m1, m2 in mips_list], axis=0)
+
 
 class TorchDinoMultiviewEncoder:
-    """Loads DINOv2/DINOv3 once; call :meth:`embed` per spot."""
+    """Loads DINOv2/DINOv3 once; supports both single-spot :meth:`embed` and batched :meth:`embed_batch`."""
 
     def __init__(self, model_name: str = DEFAULT_DINO_MODEL, device: str | None = None) -> None:
         import torch
@@ -104,26 +122,45 @@ class TorchDinoMultiviewEncoder:
         self._proc, self._model = _load_hf_dino(model_name)
         self._model.eval()
         self._model.to(self._device)
+        self._hidden = int(getattr(self._model.config, "hidden_size", 384))
 
     def embed(self, mip_mu: np.ndarray, mip_chi: np.ndarray, mip_d: np.ndarray) -> np.ndarray:
-        vecs: list[np.ndarray] = []
-        with self._torch.no_grad():
-            for mip in (mip_mu, mip_chi, mip_d):
-                rgb = _mips_to_rgb_uint8(mip)
-                inputs = self._proc(images=[rgb], return_tensors="pt")
-                inputs = {k: v.to(self._device) for k, v in inputs.items()}
-                out = self._model(**inputs).last_hidden_state[:, 0, :].squeeze(0)
-                x = out.float().cpu().numpy()
-                n = float(np.linalg.norm(x))
-                if n > 0:
-                    x = x / n
-                vecs.append(x.astype(np.float32))
+        return self.embed_batch([(mip_mu, mip_chi, mip_d)], batch_size=3)[0]
 
-        fused = np.concatenate(vecs, axis=0)
-        nf = float(np.linalg.norm(fused))
-        if nf > 0:
-            fused = fused / nf
-        return fused.astype(np.float32)
+    def embed_batch(
+        self,
+        mips_list: Sequence[tuple[np.ndarray, np.ndarray, np.ndarray]],
+        *,
+        batch_size: int = 32,
+    ) -> np.ndarray:
+        if not mips_list:
+            return np.zeros((0, 3 * self._hidden), dtype=np.float32)
+
+        all_rgbs: list[np.ndarray] = []
+        for mip_mu, mip_chi, mip_d in mips_list:
+            all_rgbs.append(_mips_to_rgb_uint8(mip_mu))
+            all_rgbs.append(_mips_to_rgb_uint8(mip_chi))
+            all_rgbs.append(_mips_to_rgb_uint8(mip_d))
+
+        step = max(1, int(batch_size))
+        if str(self._device) == "cpu":
+            step = min(step, 16)
+        cls_chunks: list[np.ndarray] = []
+        with self._torch.no_grad():
+            for start in range(0, len(all_rgbs), step):
+                chunk = all_rgbs[start : start + step]
+                inputs = self._proc(images=chunk, return_tensors="pt")
+                inputs = {k: v.to(self._device) for k, v in inputs.items()}
+                cls_tok = self._model(**inputs).last_hidden_state[:, 0, :].float().cpu().numpy()
+                norms = np.linalg.norm(cls_tok, axis=-1, keepdims=True)
+                norms = np.where(norms > 0.0, norms, 1.0)
+                cls_chunks.append((cls_tok / norms).astype(np.float32))
+
+        view_vecs = np.concatenate(cls_chunks, axis=0)  # (3 * N, D)
+        fused = view_vecs.reshape(len(mips_list), 3 * view_vecs.shape[-1])
+        fnorms = np.linalg.norm(fused, axis=-1, keepdims=True)
+        fnorms = np.where(fnorms > 0.0, fnorms, 1.0)
+        return (fused / fnorms).astype(np.float32)
 
 
 def _requested_backend(explicit: BackendName | None) -> BackendName:
@@ -161,6 +198,15 @@ class PatchFeatureEncoder(Protocol):
         """Return (H_patches, W_patches, D_features) feature map from a 2D grayscale image."""
         ...
 
+    def extract_patch_features_batch(
+        self,
+        images_2d: Sequence[np.ndarray],
+        *,
+        batch_size: int = 32,
+    ) -> list[np.ndarray]:
+        """Return list of (H_patches, W_patches, D_features) maps for a batch of 2D images."""
+        ...
+
     @property
     def patch_size(self) -> int: ...
 
@@ -194,9 +240,17 @@ class MockPatchEncoder:
         norms = np.where(norms > 0, norms, 1.0)
         return (features / norms).astype(np.float32)
 
+    def extract_patch_features_batch(
+        self,
+        images_2d: Sequence[np.ndarray],
+        *,
+        batch_size: int = 32,
+    ) -> list[np.ndarray]:
+        return [self.extract_patch_features(img) for img in images_2d]
+
 
 class TorchDinoPatchEncoder:
-    """Extracts DINOv2/DINOv3 patch tokens as a spatial feature map."""
+    """Extracts DINOv2/DINOv3 patch tokens as spatial feature maps (single or batched)."""
 
     def __init__(self, model_name: str = DEFAULT_DINO_MODEL, device: str | None = None) -> None:
         import torch
@@ -218,24 +272,43 @@ class TorchDinoPatchEncoder:
         return self._feature_dim
 
     def extract_patch_features(self, image_2d: np.ndarray) -> np.ndarray:
-        rgb = _mips_to_rgb_uint8(image_2d)
+        return self.extract_patch_features_batch([image_2d], batch_size=1)[0]
+
+    def extract_patch_features_batch(
+        self,
+        images_2d: Sequence[np.ndarray],
+        *,
+        batch_size: int = 32,
+    ) -> list[np.ndarray]:
+        if not images_2d:
+            return []
+        rgbs = [_mips_to_rgb_uint8(img) for img in images_2d]
+        step = max(1, int(batch_size))
+        if str(self._device) == "cpu":
+            step = min(step, 16)
+        results: list[np.ndarray] = []
         with self._torch.no_grad():
-            inputs = self._proc(images=[rgb], return_tensors="pt")
-            inputs = {k: v.to(self._device) for k, v in inputs.items()}
-            out = self._model(**inputs)
-            h_img = int(inputs["pixel_values"].shape[2])
-            w_img = int(inputs["pixel_values"].shape[3])
-            h_p = h_img // self._patch_size
-            w_p = w_img // self._patch_size
-            expected_patches = h_p * w_p
-            seq_len = int(out.last_hidden_state.shape[1])
-            skip = max(0, seq_len - expected_patches)
-            patch_tokens = out.last_hidden_state[:, skip : skip + expected_patches, :].squeeze(0)
-            features = patch_tokens.reshape(h_p, w_p, -1)
-            x = features.float().cpu().numpy()
-        norms = np.linalg.norm(x, axis=-1, keepdims=True)
-        norms = np.where(norms > 0, norms, 1.0)
-        return (x / norms).astype(np.float32)
+            for start in range(0, len(rgbs), step):
+                chunk = rgbs[start : start + step]
+                inputs = self._proc(images=chunk, return_tensors="pt")
+                inputs = {k: v.to(self._device) for k, v in inputs.items()}
+                out = self._model(**inputs)
+                bsz = int(inputs["pixel_values"].shape[0])
+                h_img = int(inputs["pixel_values"].shape[2])
+                w_img = int(inputs["pixel_values"].shape[3])
+                h_p = h_img // self._patch_size
+                w_p = w_img // self._patch_size
+                expected_patches = h_p * w_p
+                seq_len = int(out.last_hidden_state.shape[1])
+                skip = max(0, seq_len - expected_patches)
+                patch_tokens = out.last_hidden_state[:, skip : skip + expected_patches, :]
+                fmaps = patch_tokens.reshape(bsz, h_p, w_p, -1).float().cpu().numpy()
+                norms = np.linalg.norm(fmaps, axis=-1, keepdims=True)
+                norms = np.where(norms > 0.0, norms, 1.0)
+                normed = (fmaps / norms).astype(np.float32)
+                for i in range(bsz):
+                    results.append(normed[i])
+        return results
 
 
 def make_patch_encoder(

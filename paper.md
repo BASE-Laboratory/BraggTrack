@@ -35,12 +35,17 @@ transient beam dropouts. In addition, BraggTrack ranks persistent pre-fracture
 precursor candidates across scans by combining 3D reflection anisotropy,
 covariance broadening, internal sub-peak bimodality, and frozen
 vision-transformer patch-token dispersion. Designed for synchrotron NeXus/HDF5
-data, BraggTrack supports lazy HDF5 ROI streaming, crystallographic
-$(2\theta, \eta, d, |\mathbf{Q}|)$ conversion with direct `ImageD11` (`.flt`)
-and NeXus `NXprocess` HDF5 export, publication plotting and offline interactive
-HTML 4D lineage reports (`braggtrack-report`), bundled operando scans from ESRF
-beamline ID03, nine CLI entry points culminating in `braggtrack-run`, and
-interactive Jupyter notebooks runnable on Google Colab.
+data, BraggTrack supports zero-configuration
+`darfix` and ESRF BLISS motor auto-calibration, lazy HDF5 ROI streaming,
+batched vision-transformer inference, analytical Poisson centroid/strain
+uncertainties, operando electrochemistry synchronization (`--operando-log`),
+crystallographic $(2\theta, \eta, d, |\mathbf{Q}|)$ conversion with direct
+`ImageD11` (`.flt`) and NeXus `NXprocess` HDF5 export, publication plotting and
+offline interactive HTML 4D lineage reports (`braggtrack-report`), causal
+online streaming with velocity-extrapolated Dark-Field X-ray Microscopy (DFXM)
+zoom triggering (`braggtrack-watch`), bundled operando scans from ESRF beamline
+ID03, ten CLI entry points, and interactive Jupyter notebooks runnable on
+Google Colab.
 
 # Statement of Need
 
@@ -48,51 +53,67 @@ Operando diffraction experiments at modern synchrotron sources generate
 hundreds to thousands of three-dimensional diffraction volumes at sub-minute or
 sub-second cadence, each containing tens to hundreds of Bragg reflections whose
 positions, intensities, and 3D morphologies evolve during electrochemical
-cycling, mechanical loading, or thermal treatment [@Simons2015; @Hayashi2019].
+cycling, mechanical loading, or thermal treatment [@Simons2015; @Hayashi2019; @Isern2025].
 In battery electrodes such as Ni-rich layered oxides, chemomechanical
 degradation manifests first as anisotropic intragranular strain broadening and
 sub-domain formation before culminating in particle microcracking — observable
 in reciprocal space as reflection broadening followed by `1 -> 2+` peak
 splitting [@Finegan2017]. Quantifying per-grain lattice strain
 ($\varepsilon = \Delta d / d_0$), lattice rotation ($\Delta\mu$, $\Delta\chi$),
-and fracture lineage across long scan sequences is essential for linking local
-crystallography to macroscopic failure, as well as for solidification and
-additive manufacturing studies [@Leung2018].
+and fracture lineage across long scan sequences — and selecting pre-fracture
+grains online for high-resolution DFXM zoom before catastrophic splitting — is
+essential for linking local crystallography to macroscopic failure, as well as
+for solidification and additive manufacturing studies [@Leung2018].
 
-Existing workflows rely on frame-by-frame peak fitting, bespoke experiment
-scripts, or crystallographic indexing packages such as GrainSpotter
-[@Schmidt2014], 3DXRD orientation mappers [@Poulsen2004], and ImageD11
-[@Wright2023] that focus on unit-cell orientation indexing rather than tracking
-evolving, splitting, and broadening 3D intensity distributions through time.
-Previously, researchers lacked an open-source, `pip`-installable toolkit
-combining stabilised 3D spot segmentation, foundation-model visual descriptors,
-calibrated per-grain kinematics, explicit split/merge fracture lineage, and
-beamline-ready crystallographic exports in a reproducible software architecture.
+Existing diffraction and tracking packages address complementary parts of this
+workflow: crystallographic indexing suites such as GrainSpotter [@Schmidt2014],
+3DXRD orientation mappers [@Poulsen2004], HEXRD [@Bernier2011], and ImageD11
+[@Wright2023] determine unit-cell orientations and static grain tensors; deep
+neural localizers such as BraggNN [@Liu2022] accelerate 2D sub-pixel peak
+finding; DFXM analysis suites such as *darfix* [@GarrigaFerrer2023] map
+pixel-wise rocking-curve moments once a single-grain zoom scan has been
+acquired; and bioimage linear-assignment trackers such as TrackMate 7
+[@Ershov2022] and LapTrack [@Fukai2023] link cell trajectories without
+reciprocal-space Bragg strain physics, integrated-intensity split conservation,
+or synchrotron beamline metadata. Previously, researchers lacked an
+open-source, `pip`-installable toolkit combining stabilised 3D spot
+segmentation, foundation-model visual descriptors, calibrated per-grain
+kinematics with analytical uncertainties, explicit split/merge fracture
+lineage, operando potentiostat synchronization, and causal autonomous DFXM
+target selection.
 
 BraggTrack addresses this need by separating beamline HDF5 ingestion and axis
-calibration, 3D instance segmentation, multi-view vision-transformer encoding,
-Hungarian and topological lineage tracking, fracture precursor scoring, and
-interactive visualization (`braggtrack.viz`) into cleanly tested, modular
-layers.
+calibration, operando stimulus synchronization, 3D instance segmentation,
+batched multi-view vision-transformer encoding, Hungarian and topological
+lineage tracking, fracture precursor scoring, online causal streaming
+(`braggtrack.autonomous`), and interactive visualization (`braggtrack.viz`)
+into cleanly tested, modular layers.
 
 # Implementation
 
-## Beamline ingestion, lazy HDF5 streaming, and crystallographic mapping
+## Beamline ingestion, lazy HDF5 streaming, operando sync, and crystallographic mapping
 
 BraggTrack discovers sequential `scan*` directories, inspects NeXus/HDF5 trees
-(including ESRF-ID03 LIMA detector hierarchies under `/entry_0000/...` and
-generic HDF5 layouts via automatic largest-3D numeric dataset discovery), and
-validates timestamp monotonicity. To handle gigabyte-scale detector stacks
-without exhausting host memory, `LazyVolume` streams `z`-slabs for exact
-two-pass global Otsu histogramming (`otsu_threshold_chunked`) and reads only
-tight 3D spot bounding-box slices (`read_roi`) during semantic embedding and
-precursor analysis.
+(including `NXdata` `@default`/`@signal` hierarchies exported by *darfix*
+[@GarrigaFerrer2023], ESRF-ID03 LIMA detector hierarchies under `/entry_0000/...`
+[@Isern2025], and generic HDF5 layouts via automatic largest-3D numeric dataset
+discovery), and validates timestamp monotonicity. To handle gigabyte-scale
+detector stacks without exhausting host memory, `LazyVolume` streams `z`-slabs
+for exact two-pass global Otsu histogramming (`otsu_threshold_chunked`) and
+reads only tight 3D spot bounding-box slices (`read_roi`) during semantic
+embedding and precursor analysis.
 
-An `AxisCalibration` transform converts raw detector indices into physical
-reciprocal-space coordinates $(\mu, \chi, d)$ while preserving integer voxel
-bounding boxes for lossless 3D ROI cropping. Complementarily,
-`DetectorGeometry` maps transmission-diffraction spot centroids into
-crystallographic scattering angle $2\theta$, azimuth $\eta$, $d$-spacing
+An `AxisCalibration` transform — supplied via JSON or auto-extracted from
+NeXus `@axes` arrays and ESRF BLISS `instrument/positioners` metadata — converts
+raw detector indices into physical reciprocal-space coordinates $(\mu, \chi, d)$
+while preserving integer voxel bounding boxes for lossless 3D ROI cropping. When
+operando electrochemistry logs (`.csv`, `.tsv`, or Biologic EC-Lab `.mpt`) are
+provided via `--operando-log`, `braggtrack.io.operando_log` synchronizes cell
+potential $E(t)$, current $I(t)$, specific capacity $Q(t)$, regularized
+differential capacity $\mathrm{d}Q/\mathrm{d}V$, and per-grain electro-strain
+susceptibility $\partial\varepsilon/\partial V$ onto scan timestamps.
+Complementarily, `DetectorGeometry` maps transmission-diffraction spot centroids
+into crystallographic scattering angle $2\theta$, azimuth $\eta$, $d$-spacing
 ($\lambda = 2 d \sin\theta$), and reciprocal-lattice vectors $\mathbf{Q}$
 ($\text{\AA}^{-1}$), exporting directly to `ImageD11` columnfiles (`.flt`)
 [@Wright2023] and self-describing NeXus `NXprocess` HDF5 archives (`.nxs`).
@@ -117,34 +138,39 @@ BraggTrack's primary segmentation pipeline processes 3D volumes in four stages:
 4. **Seeded watershed and basin refinement.** Watershed region growing
    [@Vincent1991] over the inverted LoG response is followed by small-object
    removal, 3D hole filling, and optional nearby-centroid merging to prevent
-   over-segmentation of mosaic reflections. An experimental dense patch-feature
-   + HDBSCAN slice-stitching segmenter (`segment_dino`) is also provided for
-   cross-method comparison.
+   over-segmentation of mosaic reflections, alongside analytical Poisson counting
+   plus voxel-quantization centroid standard errors. An experimental batched
+   dense patch-feature + HDBSCAN slice-stitching segmenter (`segment_dino`) is
+   also provided for cross-method comparison.
 
-## Multi-view semantic descriptors
+## Batched multi-view semantic descriptors
 
 Each segmented 3D reflection is cropped via `LazyVolume`, masked to its instance
 support, and projected into three orthogonal maximum-intensity projections
-(MIPs) along $\mu$, $\chi$, and $d$. By default, BraggTrack encodes these views
-using the public, ungated DINOv2 vision transformer (`facebook/dinov2-small`)
-[@Oquab2024] into a concatenated $L_2$-normalised 1152-d descriptor, while also
-supporting newer DINOv3 backbones (`facebook/dinov3-vitb16-pretrain-lvd1689m`)
-via dynamic prefix/register token handling and a deterministic hash-based `mock`
-encoder for zero-GPU continuous integration.
+(MIPs) along $\mu$, $\chi$, and $d$. By default, BraggTrack batches all
+$3 N_{\text{spots}}$ views per scan through the public, ungated DINOv2 vision
+transformer (`facebook/dinov2-small`) [@Oquab2024] into a concatenated
+$L_2$-normalised 1152-d descriptor (`embed_batch`), while also supporting newer
+DINOv3 backbones (`facebook/dinov3-vitb16-pretrain-lvd1689m`) via dynamic
+prefix/register token handling and a deterministic hash-based `mock` encoder for
+zero-GPU continuous integration.
 
 ## Tracking, gap closing, kinematics, and chemomechanical fracture events
 
 Frame-to-frame 1-to-1 association solves the gated Hungarian assignment problem
 [@Kuhn1955] over $\alpha \cdot C_{\text{geo}}(i, j) + \beta \cdot (1 -
-\cos(\mathbf{f}_i, \mathbf{f}_j))$, constructing a NetworkX [@Hagberg2008]
-`DiGraph`. Prior to topological event detection, `resolve_track_gaps` solves an
-augmented multi-scan linear assignment problem [@Jaqaman2008] with diffusive
-displacement scaling ($\Delta r^2 / \Delta t$) and semantic cosine gating to
-reconnect reflections across transient beam dropouts (`--max-gap`) while
-severing spurious cross-detector jumps. From each trajectory,
-`compute_grain_kinematics` extracts time-series strain $\Delta d / d_0$,
-rocking/azimuthal misorientation, integrated intensity and volume evolution, and
-3D eigenvalue anisotropy.
+\cos(\mathbf{f}_i, \mathbf{f}_j))$, recording per-link assignment cost margins
+(`assignment_margin` to the runner-up candidate) and constructing a NetworkX
+[@Hagberg2008] `DiGraph`. Prior to topological event detection,
+`resolve_track_gaps` solves an augmented multi-scan linear assignment problem
+[@Jaqaman2008] with diffusive displacement scaling ($\Delta r^2 / \Delta t$) and
+semantic cosine gating to reconnect reflections across transient beam dropouts
+(`--max-gap`) while severing spurious cross-detector jumps. From each
+trajectory, `compute_grain_kinematics` extracts local time-series strain
+$\Delta d / d_0$, ancestor-referenced `lineage_strain` across fracture splits,
+propagated strain uncertainty $\sigma_\varepsilon$, causal angular/lattice
+velocities (`rate_mu`, `rate_chi`, `rate_d`, `strain_rate`), integrated
+intensity and volume evolution, and 3D eigenvalue anisotropy.
 
 To capture grain fracture and coalescence, `resolve_splits_and_merges` augments
 remaining unmatched birth and termination nodes with explicit `1 -> 2+` split
@@ -154,10 +180,27 @@ intensity share, assigning clean daughter track IDs so diverging post-fracture
 strains are tracked independently (\autoref{fig:lineage}). Complementarily,
 `compute_fracture_precursors` scores pre-split intragranular degradation across
 contiguous scans (`min_persistence`) using 3D eigenvalue anisotropy, covariance
-trace growth, internal 3D sub-peak bimodality, and foreground DINO patch-token
-cosine dispersion.
+trace growth, internal 3D sub-peak bimodality, and batched foreground DINO
+patch-token cosine dispersion.
 
 ![Four-dimensional chemomechanical fracture lineage, pre-split bimodal MIP evolution, persistent precursor decomposition (`facebook/dinov2-small`), and calibrated ESRF-ID03 Ni-rich cathode per-grain strain trajectories.\label{fig:lineage}](docs/figures/fracture_lineage_and_precursors.png)
+
+## Causal streaming and autonomous "Scout-and-Zoom" DFXM targeting
+
+To support closed-loop synchrotron experiments [@Isern2025],
+`braggtrack.autonomous` provides `CausalStreamingTracker` and the
+`braggtrack-watch` CLI. Operating strictly without future-scan lookahead
+(trailing-window Otsu threshold stabilisation and $O(1)$-volume-RAM cached ROI
+precursors), `CausalStreamingTracker` evaluates active reflections as each
+wide-field scouting scan completes and applies `ZoomTriggerPolicy` with
+configurable zoom budgets and per-track cooldowns. Because reflections drift
+rapidly during phase transitions while beamline optics reconfigure, target
+motor setpoints $(\mu, \chi, 2\theta / d)$ are extrapolated forward by causal
+angular and lattice velocities over the reconfiguration lead time
+$\Delta t_{\text{lead}}$ and emitted as schema-validated `bliss_dfxm_zoom.v1`
+JSONL commands (`zoom_triggers.jsonl`), accompanied by an offline causal replay
+benchmark (`evaluate_causal_replay`) comparing precursor-guided selection
+against intensity, strain-only, and random baselines.
 
 ## Quantitative evaluation, visualization, and reproducibility
 
@@ -171,9 +214,11 @@ $\approx 0$), eliminate crossing ID switches between reflections with identical
 
 ![Quantitative 4D diffraction benchmark suite comparing Geometry-Only, Mock-Hash, and Real `facebook/dinov2-small` across crossing tilted reflections, flux/mosaic noise invariance, and staggered beam-dropout recovery.\label{fig:benchmarks}](docs/figures/benchmark_comparison.png)
 
-BraggTrack (`pip install braggtrack`) provides nine CLI commands, including
-`braggtrack-report` (generating publication figures and a zero-CDN offline
-interactive HTML 4D Lineage & Strain Explorer) and `braggtrack-run`, which
+BraggTrack (`pip install braggtrack`) provides ten CLI commands, including
+`braggtrack-report` (generating publication figures, 3-panel operando
+electrochemistry $\mathrm{d}Q/\mathrm{d}V$ dashboards, and a zero-CDN offline
+interactive HTML 4D Lineage & Strain Explorer), `braggtrack-watch` (live causal
+streaming and offline autonomous DFXM replay), and `braggtrack-run`, which
 executes validation, segmentation, embedding, tracking, kinematics, event
 detection, reporting, and `ImageD11`/NeXus export while writing a
 `run_manifest.json` with SHA-256 input checksums and per-stage runtimes.

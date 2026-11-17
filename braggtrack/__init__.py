@@ -5,6 +5,6 @@ from importlib.metadata import PackageNotFoundError, version
 try:
     __version__ = version("braggtrack")
 except PackageNotFoundError:
-    __version__ = "0.3.0.dev0"
+    __version__ = "0.4.0.dev0"
 
-__all__ = ["io", "segmentation", "semantic", "tracking", "viz"]
+__all__ = ["autonomous", "io", "segmentation", "semantic", "tracking", "viz"]

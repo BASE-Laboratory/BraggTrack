@@ -15,6 +15,9 @@ DEFAULT_VOLUME_CANDIDATES: tuple[str, ...] = (
     "/entry1/data/data",
     "/entry_0000/ESRF-ID03/pco_nf/data",
     "/entry_0000/data/data",
+    "/entry/darfix/data",
+    "/entry_0000/darfix/data",
+    "/entry/process/darfix/results/data",
     "/entry/instrument/detector/data",
     "/entry1/instrument/detector/data",
 )
@@ -64,6 +67,22 @@ def _decode_value(value: Any) -> Any:
             return inner.decode("utf-8", errors="replace")
         return inner
     return value
+
+
+def _decode_str_list(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, (bytes, str)):
+        s = _decode_value(value)
+        return [s] if isinstance(s, str) and s.strip() else []
+    if hasattr(value, "__iter__"):
+        out: list[str] = []
+        for item in value:
+            s = _decode_value(item)
+            if isinstance(s, str) and s.strip():
+                out.append(s)
+        return out
+    return []
 
 
 def _candidate_entries(handle: Any, h5py: Any) -> list[str]:
@@ -133,12 +152,21 @@ def extract_scan_metadata(path: str | Path) -> dict[str, Any]:
     return metadata
 
 
+_MOTOR_AXIS_SYNONYMS: dict[str, tuple[str, ...]] = {
+    "mu": ("mu", "omega", "obx", "rocking"),
+    "chi": ("chi", "phi", "oby"),
+    "d": ("d", "obpitch", "twotheta", "two_theta", "2theta", "tth"),
+}
+
+
 def extract_axis_calibration(path: str | Path) -> AxisCalibration:
     """Extract linear ``(mu, chi, d)`` calibration from a NeXus/HDF5 file if present.
 
-    Checks ``/entry*/calibration`` attributes/datasets or 1D coordinate arrays
-    ``mu``, ``chi``, and ``d``. Returns an uncalibrated identity
-    :class:`AxisCalibration` when physical axis scales are absent.
+    Probes:
+    1. Explicit ``/entry*/calibration`` groups.
+    2. NeXus ``NXdata`` ``@axes`` attributes on the primary 3D dataset's parent group (e.g. ``darfix``).
+    3. 1D coordinate arrays under ``NXentry``, ``data``, ``measurement``, or ESRF BLISS
+       ``instrument/positioners/{mu, chi, obpitch, twotheta, d}``.
     """
     import numpy as np
 
@@ -165,16 +193,50 @@ def extract_axis_calibration(path: str | Path) -> AxisCalibration:
                 if raw:
                     return AxisCalibration.from_dict(raw)
 
-            # Check 1D axis arrays under NXentry, NXdata, or the primary 3D dataset's parent group.
+        # Check NeXus NXdata @axes attribute on parent group (e.g. darfix NXdata cubes: (z=mu, y=d/2theta, x=chi))
+        if vol_parent and vol_parent != "/" and vol_parent in handle:
+            pgrp = handle[vol_parent]
+            nx_axes = _decode_str_list(pgrp.attrs.get("axes"))
+            if len(nx_axes) == 3:
+                nx_found: dict[str, tuple[float, float]] = {}
+                # Voxel order (z, y, x) -> BraggTrack (mu, d, chi)
+                for dim_idx, target_axis in ((0, "mu"), (1, "d"), (2, "chi")):
+                    ax_ds_name = nx_axes[dim_idx]
+                    if ax_ds_name != "." and ax_ds_name in pgrp and isinstance(pgrp[ax_ds_name], h5py.Dataset):
+                        arr = np.asarray(pgrp[ax_ds_name][()], dtype=np.float64).ravel()
+                        if arr.size >= 2 and float(arr[-1] - arr[0]) != 0.0:
+                            nx_found[target_axis] = (float(arr[0]), float((arr[-1] - arr[0]) / (arr.size - 1)))
+                if nx_found:
+                    return AxisCalibration(
+                        mu_origin=nx_found.get("mu", (0.0, 1.0))[0],
+                        mu_step=nx_found.get("mu", (0.0, 1.0))[1],
+                        chi_origin=nx_found.get("chi", (0.0, 1.0))[0],
+                        chi_step=nx_found.get("chi", (0.0, 1.0))[1],
+                        d_origin=nx_found.get("d", (0.0, 1.0))[0],
+                        d_step=nx_found.get("d", (0.0, 1.0))[1],
+                        calibrated=True,
+                    )
+
+        for e in entries:
+            # Check 1D axis/motor arrays under NXentry, NXdata, measurement, or ESRF BLISS instrument/positioners
             axes_found: dict[str, tuple[float, float]] = {}
-            for axis_name in ("mu", "chi", "d"):
-                search_paths = [f"{e}/{axis_name}", f"{e}/data/{axis_name}", f"{e}/measurement/{axis_name}"]
-                if vol_parent and vol_parent != "/":
-                    search_paths.append(f"{vol_parent.rstrip('/')}/{axis_name}")
+            for axis_name, synonyms in _MOTOR_AXIS_SYNONYMS.items():
+                search_paths: list[str] = []
+                for syn in synonyms:
+                    search_paths.extend(
+                        [
+                            f"{e}/{syn}",
+                            f"{e}/data/{syn}",
+                            f"{e}/measurement/{syn}",
+                            f"{e}/instrument/positioners/{syn}",
+                        ]
+                    )
+                    if vol_parent and vol_parent != "/":
+                        search_paths.append(f"{vol_parent.rstrip('/')}/{syn}")
                 for sub in search_paths:
                     if sub in handle and isinstance(handle[sub], h5py.Dataset):
                         arr = np.asarray(handle[sub][()], dtype=np.float64).ravel()
-                        if arr.size >= 2:
+                        if arr.size >= 2 and float(arr[-1] - arr[0]) != 0.0:
                             axes_found[axis_name] = (float(arr[0]), float((arr[-1] - arr[0]) / (arr.size - 1)))
                             break
             if axes_found:
@@ -209,6 +271,19 @@ def _resolve_volume_dataset(
             return "/" + key.lstrip("/")
 
     if candidates is None and auto_discover:
+        # Check NeXus @default -> NXdata @signal chain first (used by darfix / silx / Ewoks)
+        for e in _candidate_entries(handle, h5py):
+            eg = handle[e]
+            def_data = _decode_value(eg.attrs.get("default"))
+            if isinstance(def_data, str) and def_data.strip():
+                dgrp_path = f"{e.rstrip('/')}/{def_data.strip('/')}"
+                if dgrp_path in handle and isinstance(handle[dgrp_path], h5py.Group):
+                    sig = _decode_value(handle[dgrp_path].attrs.get("signal"))
+                    if isinstance(sig, str) and sig in handle[dgrp_path]:
+                        sig_ds = handle[dgrp_path][sig]
+                        if isinstance(sig_ds, h5py.Dataset) and sig_ds.ndim == 3:
+                            return f"{dgrp_path}/{sig}"
+
         discovered: list[tuple[str, tuple[int, ...]]] = []
 
         def _visit(name: str, obj: Any) -> None:

@@ -5,6 +5,25 @@ All notable changes to BraggTrack will be documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2026-11-17
+
+### Added
+- **Analytical Poisson + quantization centroid/strain uncertainties & ancestor-referenced kinematics (`braggtrack.segmentation.features`, `braggtrack.tracking.kinematics`, `braggtrack.tracking.assignment`)**:
+  - Emits per-spot `centroid_mu_err`, `centroid_chi_err`, and `centroid_d_err` combining Poisson photon-counting variance and `1/12` voxel quantization variance.
+  - Propagates `strain_err` ($\sigma_\varepsilon$), ancestor-referenced `root_track_id`, `lineage_strain`, and `lineage_strain_err` across `1 -> 2+` fracture splits, plus causal velocities (`rate_mu`, `rate_chi`, `rate_d`, `strain_rate`) and Hungarian runner-up `assignment_margin`.
+- **Operando electrochemistry & external stimulus synchronization (`braggtrack.io.operando_log`, `braggtrack.viz.operando`)**:
+  - Parses `.csv`/`.tsv` and Biologic EC-Lab `.mpt` potentiostat logs (`load_operando_log`, `synchronize_stimulus_to_scans`), computing Savitzky–Golay regularized differential capacity $\mathrm{d}Q/\mathrm{d}V$ and per-grain electro-strain susceptibility `d_strain_d_v` ($\partial\varepsilon/\partial V$).
+  - Added 3-panel publication plot `plot_operando_strain_and_events` and wired `--operando-log` / `--operando-tz-offset` into `braggtrack-report`, `braggtrack-run`, and `report.html`.
+- **Batched `DINOv2` ViT inference & zero-config `darfix` / ESRF BLISS NeXus auto-calibration (`braggtrack.semantic.dino`, `braggtrack.io.nexus`)**:
+  - Added `embed_batch` and `extract_patch_features_batch` across `MultiviewEncoder` and `PatchFeatureEncoder` (with CPU L3-friendly micro-batching), accelerating `braggtrack-embed-dataset`, `compute_fracture_precursors`, and `segment_dino` while guaranteeing bit-identical cosine parity.
+  - Added `NXdata` `@default` / `@signal` / `@axes` (`darfix` processed HDF5) and ESRF BLISS `instrument/positioners` auto-calibration in `discover_primary_volume_path` and `extract_axis_calibration`.
+- **Online causal streaming & autonomous DFXM "Scout-and-Zoom" engine (`braggtrack.autonomous`, `braggtrack-watch`)**:
+  - Added `CausalStreamingTracker` (`streaming.py`) with strictly causal trailing-window Otsu stabilisation and $O(1)$-volume-RAM cached ROI precursors.
+  - Added `ZoomTriggerPolicy`, `ZoomTarget`, and `select_zoom_targets` (`trigger.py`) with velocity-extrapolated diffractometer setpoint prediction, uncertainty-aware rocking-window sizing, and `bliss_dfxm_zoom.v1` JSONL serialization (`zoom_triggers.jsonl`).
+  - Added `evaluate_causal_replay` (`replay.py`) benchmarking autonomous pre-fracture recall, electrochemical lead ($\Delta E$), and setpoint hit rate against `brightest_intensity`, `strain_only`, and `random` policies, exposed via the 10th CLI entry point `braggtrack-watch` (`--mode watch` and `--mode replay`).
+- **Ecosystem positioning, verified bibliography & release workflow (`docs/positioning.md`, `.github/workflows/release.yml`)**:
+  - Added `docs/positioning.md` comparing `BraggTrack` against `darfix`, `ImageD11`, `HEXRD`, `BraggNN`, `TrackMate 7`, and `LapTrack`, updated `paper.md` and `paper.bib` with verified DOIs (`@GarrigaFerrer2023`, `@Isern2025`, `@Bernier2011`, `@Liu2022`, `@Fukai2023`, `@Ershov2022`), bumped metadata to `0.4.0`, and added tag-triggered sdist/wheel + Twine + GitHub Release / PyPI Trusted Publisher workflow.
+
 ## [0.3.0] - 2026-11-17
 
 ### Added

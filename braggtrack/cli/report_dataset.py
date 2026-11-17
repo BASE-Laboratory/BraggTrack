@@ -12,6 +12,7 @@ from braggtrack.viz import (
     generate_html_report,
     plot_kinematics_dashboard,
     plot_lineage_dag,
+    plot_operando_strain_and_events,
     plot_precursor_timeline,
 )
 
@@ -28,6 +29,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--dataset-root",
         default=None,
         help="Optional raw HDF5 dataset root for embedding 3-axis MIP spot thumbnails",
+    )
+    parser.add_argument(
+        "--operando-log",
+        default=None,
+        help="Optional external operando CSV/TSV/Biologic .mpt log for synchronized stimulus plots",
     )
     parser.add_argument(
         "--outdir",
@@ -76,6 +82,7 @@ def main(argv: list[str] | None = None) -> int:
         in_root,
         out_root / "report.html",
         dataset_root=args.dataset_root,
+        operando_log=args.operando_log,
         max_mip_tracks=max(0, args.max_mip_tracks),
     )
 
@@ -122,6 +129,32 @@ def main(argv: list[str] | None = None) -> int:
                 )
                 plt.close(fig_prec)
                 figures["precursor_timeline"] = str((fig_dir / "precursor_timeline.png").resolve())
+
+            # Synchronized operando stimulus + lineage strain figure if log or saved JSON exists
+            stim_rows: list[dict[str, Any]] = []
+            if args.operando_log:
+                from braggtrack.io import load_operando_log, synchronize_to_scans
+
+                n_scans_est = max((int(float(r["scan_idx"])) for r in track_rows), default=0) + 1
+                stim_rows = [
+                    p.to_dict() for p in synchronize_to_scans(load_operando_log(args.operando_log), n_scans_est)
+                ]
+            elif (in_root / "operando_stimulus.json").exists():
+                raw_stim = json.loads((in_root / "operando_stimulus.json").read_text())
+                if isinstance(raw_stim, dict) and isinstance(raw_stim.get("scans"), list):
+                    stim_rows = raw_stim["scans"]
+
+            if stim_rows:
+                fig_op, _ = plot_operando_strain_and_events(
+                    track_rows,
+                    stim_rows,
+                    events=event_rows,
+                    precursor_observations=prec_obs_rows,
+                    calibrated=calibrated,
+                    save_path=fig_dir / "operando_strain_and_events.png",
+                )
+                plt.close(fig_op)
+                figures["operando_strain_and_events"] = str((fig_dir / "operando_strain_and_events.png").resolve())
         except ImportError:
             pass
 

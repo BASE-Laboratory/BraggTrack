@@ -2,21 +2,25 @@ cff-version: 1.2.0
 message: "If you use this software, please cite it as below."
 title: "BraggTrack"
 type: software
-version: 0.3.0
+version: 0.4.0
 date-released: "2026-05-16"
 license: MIT
 repository-code: "https://github.com/BASE-Laboratory/BraggTrack"
 url: "https://github.com/BASE-Laboratory/BraggTrack"
 abstract: >-
-  Semantic 4D kinematics, multi-scan gap closing, and chemomechanical
-  fracture tracking for operando X-ray diffraction. BraggTrack segments
-  Bragg reflections in 3D reciprocal-space volumes, tracks trajectories
-  and split/merge lineage using classical crystallography and
-  vision-transformer embeddings, and exports ImageD11, NeXus HDF5, and
+  Semantic 4D kinematics, multi-scan gap closing, chemomechanical fracture
+  tracking, operando electrochemistry synchronization, and online autonomous
+  Dark-Field X-ray Microscopy (DFXM) target selection for operando X-ray
+  diffraction. BraggTrack segments Bragg reflections in 3D reciprocal-space
+  volumes, tracks trajectories and split/merge lineage with analytical
+  uncertainties using classical crystallography and batched vision-transformer
+  embeddings, and exports ImageD11, NeXus HDF5, BLISS zoom triggers, and
   interactive HTML 4D lineage reports.
 keywords:
   - X-ray diffraction
+  - dark-field X-ray microscopy
   - operando crystallography
+  - autonomous experiments
   - 3D segmentation
   - object tracking
   - grain fracture
