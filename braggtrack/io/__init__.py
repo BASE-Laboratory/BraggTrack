@@ -1,7 +1,10 @@
 """Data I/O helpers for BraggTrack."""
 
 from .beamline import BeamlineAdapter
+from .crystallography import DetectorGeometry, annotate_crystallographic_columns
 from .discovery import discover_operando_scans
+from .export import IMAGED11_COLUMNS, export_imaged11_flt, export_nexus_process, read_imaged11_flt
+from .lazy import LazyVolume, open_lazy_volume, otsu_threshold_chunked
 from .models import AxisCalibration, AxisSpec, ExperimentSequence, ScanVolumeMeta
 from .nexus import (
     MissingH5DependencyError,
@@ -15,21 +18,30 @@ from .paths import default_dataset_root, resolve_dataset_root, sample_operando_r
 from .validation import ValidationIssue, validate_sequence
 
 __all__ = [
-    "default_dataset_root",
-    "resolve_dataset_root",
-    "sample_operando_root",
-    "discover_operando_scans",
-    "discover_primary_volume_path",
-    "extract_axis_calibration",
-    "extract_scan_metadata",
-    "summarize_hdf5_tree",
-    "load_primary_volume",
-    "MissingH5DependencyError",
     "AxisCalibration",
     "AxisSpec",
-    "ScanVolumeMeta",
-    "ExperimentSequence",
     "BeamlineAdapter",
+    "DetectorGeometry",
+    "ExperimentSequence",
+    "IMAGED11_COLUMNS",
+    "LazyVolume",
+    "MissingH5DependencyError",
+    "ScanVolumeMeta",
     "ValidationIssue",
+    "annotate_crystallographic_columns",
+    "default_dataset_root",
+    "discover_operando_scans",
+    "discover_primary_volume_path",
+    "export_imaged11_flt",
+    "export_nexus_process",
+    "extract_axis_calibration",
+    "extract_scan_metadata",
+    "load_primary_volume",
+    "open_lazy_volume",
+    "otsu_threshold_chunked",
+    "read_imaged11_flt",
+    "resolve_dataset_root",
+    "sample_operando_root",
+    "summarize_hdf5_tree",
     "validate_sequence",
 ]

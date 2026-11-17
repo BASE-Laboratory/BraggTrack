@@ -16,6 +16,8 @@ from braggtrack.io import (
     discover_primary_volume_path,
     extract_axis_calibration,
     load_primary_volume,
+    open_lazy_volume,
+    otsu_threshold_chunked,
     resolve_dataset_root,
 )
 from braggtrack.segmentation import (
@@ -191,12 +193,20 @@ def main(argv: list[str] | None = None) -> int:
             src = "synthetic_fallback"
         return vol, src, dpath, scan_cal
 
-    # First pass: compute scalar per-scan Otsu thresholds in O(1) volume memory.
+    # First pass: compute scalar per-scan Otsu thresholds via streaming z-slabs.
     raw_thresholds: list[float] = []
     for scan in scans:
-        vol_tmp, _, _, _ = _load_one(scan)
-        raw_thresholds.append(otsu_threshold(vol_tmp.ravel()) * float(args.threshold_fraction))
-        del vol_tmp
+        scan_path = scan.path  # type: ignore[attr-defined]
+        try:
+            with open_lazy_volume(scan_path) as lazy_tmp:
+                thr = otsu_threshold_chunked(lazy_tmp)
+        except MissingH5DependencyError:
+            thr = otsu_threshold(synth_volume_from_file(scan_path))
+        except (KeyError, ValueError):
+            if not args.allow_synthetic_fallback:
+                raise
+            thr = otsu_threshold(synth_volume_from_file(scan_path))
+        raw_thresholds.append(thr * float(args.threshold_fraction))
 
     if args.method == "classical" and args.smooth_window > 1 and len(raw_thresholds) > 1:
         effective_thresholds = [float(x) for x in smooth_thresholds(raw_thresholds, window=args.smooth_window)]

@@ -5,6 +5,20 @@ All notable changes to BraggTrack will be documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-11-17
+
+### Added
+- **Multi-scan beam-dropout gap closing (`braggtrack.tracking.gap_closing`)**: Added Jaqaman-style augmented linear assignment (`GapClosingConfig`, `GapCloseRecord`, `resolve_track_gaps`) with diffusive displacement scaling (`pos_d2 / delta_scans`), bidirectional spurious jump-edge severing, semantic cosine gating, and chronological track ID propagation (`--max-gap` across `track_dataset`, `detect_events`, and `run_pipeline`).
+- **Chunked & lazy HDF5 streaming (`braggtrack.io.lazy`)**: Added context-managed `LazyVolume` (`open_lazy_volume`, `read_roi`, `iter_z_chunks`) and exact two-pass `otsu_threshold_chunked`, wired into `segment_dataset` Pass 1, `embed_dataset`, `detect_events`, and `crop_spot_cube` to avoid full-volume `float64` allocations on gigabyte-scale detector stacks.
+- **Crystallographic scattering geometry & downstream exports (`braggtrack.io.crystallography`, `braggtrack.io.export`)**: Added `DetectorGeometry` (`spot_to_scattering`, `annotate_crystallographic_columns`) converting spot centroids into `(omega_deg, two_theta_deg, eta_deg, d_spacing_angstrom, qx/qy/qz/q_mag_inv_angstrom)` via Bragg's law, plus direct `ImageD11` columnfile export/parsing (`export_imaged11_flt`, `read_imaged11_flt`) and self-describing NeXus `NXprocess` HDF5 archival export (`export_nexus_process`).
+- **Publication visualization package & interactive HTML 4D Explorer (`braggtrack.viz`, `braggtrack-report`)**: Added `plot_spot_mip_card`, `plot_scan_projection_overlay`, `plot_lineage_dag`, `plot_kinematics_dashboard`, `plot_precursor_timeline`, and `generate_html_report` (zero-CDN offline `report.html` with stdlib-encoded base64 3-view MIP thumbnails, pan/zoom SVG Lineage DAG, filter pills, and synchronized strain/precursor inspector), plus the 9th CLI entry point `braggtrack-report` and `--report` flag on `braggtrack-run`.
+- **Quantitative 5-scenario real DINOv2 benchmark suite (`scripts/benchmark_suite.py`, `docs/benchmarks.md`)**: Added multi-trial bootstrap-CI benchmark harness comparing **Geometry-Only**, **Mock-Hash**, and **Real `facebook/dinov2-small`** across crossing tilted reflections, beam-flux jitter, mosaic rocking broadening, staggered beam dropouts (`max_gap=2`), and 4D chemomechanical fracture/precursor contrast, alongside publication figures (`docs/figures/`) and an ESRF-ID03 `facebook/dinov2-small` case study.
+- **9th CI acceptance gate (`scripts/check_report_and_export_acceptance.py`)**: Wired automated verification of `--max-gap`, `report.html` + static figures, `ImageD11` `.flt` round-trip parsing, and NeXus `NXprocess` HDF5 schema into `scripts/ci_report.py`.
+
+### Fixed
+- Fixed patch-grid shape mismatch and far-edge clipping in `segment_dino` when HuggingFace ViT processors resize non-multiple slices (e.g. `250x250 -> 224x224`, `16x16` tokens vs `250 // 14 = 17`), and honored `BRAGGTRACK_DINO_BACKEND` when `backend="auto"` in `braggtrack.semantic.dino`.
+- Fixed `@Finegan2017` citation key/year mismatch (`2017`, DOI `10.1039/C7EE00385D`) and added `@Jaqaman2008` in `paper.bib` and `paper.md`; synced `CITATION.cff`, `CONTRIBUTING.md`, `docs/architecture.md`, and `README.md` to `v0.3.0`.
+
 ## [0.2.0] - 2026-11-17
 
 ### Added

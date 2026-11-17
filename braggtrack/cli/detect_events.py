@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from contextlib import ExitStack
 from pathlib import Path
 from typing import Any
 
@@ -13,14 +14,16 @@ from braggtrack.cli._utils import load_feature_csv, synth_volume_from_file, writ
 from braggtrack.cli.track_dataset import _load_embeddings_npz, _merge_embeddings
 from braggtrack.io import (
     BeamlineAdapter,
+    LazyVolume,
     MissingH5DependencyError,
     discover_operando_scans,
-    load_primary_volume,
+    open_lazy_volume,
     resolve_dataset_root,
 )
 from braggtrack.semantic import DEFAULT_DINO_MODEL, make_patch_encoder
 from braggtrack.semantic.dino import _requested_backend, _resolve_backend
 from braggtrack.tracking import (
+    GapClosingConfig,
     GeometrySemanticCost,
     PositionShapeCost,
     PrecursorConfig,
@@ -66,6 +69,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--gate-chi", type=float, default=float("inf"))
     parser.add_argument("--gate-d", type=float, default=float("inf"))
     parser.add_argument("--max-cost", type=float, default=float("inf"))
+    parser.add_argument("--max-gap", type=int, default=0, help="Max missing intermediate scans to bridge (0 disables)")
+    parser.add_argument("--gap-max-cost", type=float, default=25.0, help="Max penalized cost for gap-closing bridges")
     parser.add_argument("--cost-alpha", type=float, default=1.0)
     parser.add_argument("--cost-beta", type=float, default=0.0)
     parser.add_argument("--split-max-distance", type=float, default=25.0)
@@ -83,13 +88,14 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _try_load_roi_inputs(
+    stack: ExitStack,
     root_arg: str | None,
     scan_dirs: list[Path],
     scan_names: list[str],
     *,
     allow_synthetic_fallback: bool,
-) -> tuple[dict[int, np.ndarray], dict[int, np.ndarray], dict[int, str | None]]:
-    volumes: dict[int, np.ndarray] = {}
+) -> tuple[dict[int, Any], dict[int, np.ndarray], dict[int, str | None]]:
+    volumes: dict[int, Any] = {}
     label_volumes: dict[int, np.ndarray] = {}
     timestamps: dict[int, str | None] = {}
 
@@ -123,13 +129,13 @@ def _try_load_roi_inputs(
         if sf is None or idx not in label_volumes:
             continue
         try:
-            vol = load_primary_volume(sf.path)
+            vol: LazyVolume = stack.enter_context(open_lazy_volume(sf.path))
         except MissingH5DependencyError:
-            vol = synth_volume_from_file(sf.path)
+            vol = LazyVolume.from_array(synth_volume_from_file(sf.path))
         except (KeyError, ValueError):
             if not allow_synthetic_fallback:
                 continue
-            vol = synth_volume_from_file(sf.path)
+            vol = LazyVolume.from_array(synth_volume_from_file(sf.path))
         if vol.shape == label_volumes[idx].shape:
             volumes[idx] = vol
 
@@ -175,63 +181,69 @@ def main(argv: list[str] | None = None) -> int:
                 print(json.dumps({"error": "Missing embeddings.npz", "path": str(npz)}))
                 return 1
 
-    volumes, label_volumes, scan_timestamps = _try_load_roi_inputs(
-        args.root,
-        used_scan_dirs,
-        scan_names,
-        allow_synthetic_fallback=bool(args.allow_synthetic_fallback),
-    )
+    with ExitStack() as stack:
+        volumes, label_volumes, scan_timestamps = _try_load_roi_inputs(
+            stack,
+            args.root,
+            used_scan_dirs,
+            scan_names,
+            allow_synthetic_fallback=bool(args.allow_synthetic_fallback),
+        )
 
-    geo = PositionShapeCost(
-        position_weight=args.position_weight,
-        shape_weight=args.shape_weight,
-        gate_mu=args.gate_mu,
-        gate_chi=args.gate_chi,
-        gate_d=args.gate_d,
-    )
-    cost_fn = (
-        GeometrySemanticCost(geo, cost_alpha=args.cost_alpha, cost_beta=args.cost_beta)
-        if args.cost_beta != 0.0
-        else geo
-    )
-    sm_cfg = SplitMergeConfig(
-        max_distance=args.split_max_distance,
-        gate_mu=args.gate_mu,
-        gate_chi=args.gate_chi,
-        gate_d=args.gate_d,
-        min_intensity_ratio=args.min_intensity_ratio,
-        max_intensity_ratio=args.max_intensity_ratio,
-        min_fragment_share=args.min_fragment_share,
-    )
+        geo = PositionShapeCost(
+            position_weight=args.position_weight,
+            shape_weight=args.shape_weight,
+            gate_mu=args.gate_mu,
+            gate_chi=args.gate_chi,
+            gate_d=args.gate_d,
+        )
+        cost_fn = (
+            GeometrySemanticCost(geo, cost_alpha=args.cost_alpha, cost_beta=args.cost_beta)
+            if args.cost_beta != 0.0
+            else geo
+        )
+        gap_cfg = GapClosingConfig(max_gap=args.max_gap, max_cost=args.gap_max_cost) if args.max_gap > 0 else None
+        sm_cfg = SplitMergeConfig(
+            max_distance=args.split_max_distance,
+            gate_mu=args.gate_mu,
+            gate_chi=args.gate_chi,
+            gate_d=args.gate_d,
+            min_intensity_ratio=args.min_intensity_ratio,
+            max_intensity_ratio=args.max_intensity_ratio,
+            min_fragment_share=args.min_fragment_share,
+        )
 
-    G = build_tracks(
-        scan_tables,
-        cost_fn=cost_fn,
-        max_cost=args.max_cost,
-        split_merge_config=sm_cfg,
-        scan_timestamps=scan_timestamps or None,
-    )
-    metrics = compute_tracking_metrics(G, n_scans=len(scan_tables))
-    lineage_events = list(G.graph.get("lineage_events", []))
-    track_rows = tracks_to_table(G)
-    for tr in track_rows:
-        tr.pop("embedding", None)
+        G = build_tracks(
+            scan_tables,
+            cost_fn=cost_fn,
+            max_cost=args.max_cost,
+            gap_closing_config=gap_cfg,
+            split_merge_config=sm_cfg,
+            scan_timestamps=scan_timestamps or None,
+        )
+        metrics = compute_tracking_metrics(G, n_scans=len(scan_tables))
+        lineage_events = list(G.graph.get("lineage_events", []))
+        track_rows = tracks_to_table(G)
+        for tr in track_rows:
+            tr.pop("embedding", None)
 
-    resolved_backend = _resolve_backend(_requested_backend(args.backend))  # type: ignore[arg-type]
-    patch_encoder = make_patch_encoder(resolved_backend, model_name=args.model) if (volumes and label_volumes) else None
+        resolved_backend = _resolve_backend(_requested_backend(args.backend))  # type: ignore[arg-type]
+        patch_encoder = (
+            make_patch_encoder(resolved_backend, model_name=args.model) if (volumes and label_volumes) else None
+        )
 
-    prec_cfg = PrecursorConfig(
-        score_threshold=args.precursor_threshold,
-        min_persistence=max(1, args.precursor_persistence),
-    )
-    candidates, obs_scores = compute_fracture_precursors(
-        track_rows,
-        prec_cfg,
-        volumes=volumes or None,
-        label_volumes=label_volumes or None,
-        patch_encoder=patch_encoder,
-        lineage_events=lineage_events,
-    )
+        prec_cfg = PrecursorConfig(
+            score_threshold=args.precursor_threshold,
+            min_persistence=max(1, args.precursor_persistence),
+        )
+        candidates, obs_scores = compute_fracture_precursors(
+            track_rows,
+            prec_cfg,
+            volumes=volumes or None,
+            label_volumes=label_volumes or None,
+            patch_encoder=patch_encoder,
+            lineage_events=lineage_events,
+        )
 
     event_rows = events_to_table(lineage_events)
     prec_rows = precursors_to_table(candidates)
@@ -262,6 +274,7 @@ def main(argv: list[str] | None = None) -> int:
         "scan_names": scan_names,
         "n_scans": len(scan_tables),
         "total_tracks": metrics["total_tracks"],
+        "gap_closed_count": metrics["gap_closed_count"],
         "split_count": metrics["split_count"],
         "merge_count": metrics["merge_count"],
         "event_count": len(event_rows),

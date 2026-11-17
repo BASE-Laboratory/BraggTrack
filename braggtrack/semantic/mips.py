@@ -5,14 +5,16 @@ Volume layout is ``(z, y, x)`` with **μ → z**, **d → y**, **χ → x**.
 
 from __future__ import annotations
 
+from typing import Any
+
 import numpy as np
 
 
 def crop_spot_cube(
-    volume: np.ndarray,
+    volume: np.ndarray | Any,
     labels: np.ndarray,
     label_id: int,
-    bbox: dict[str, int],
+    bbox: dict[str, Any],
     margin: int = 2,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Crop a padded sub-volume and binary mask for one instance.

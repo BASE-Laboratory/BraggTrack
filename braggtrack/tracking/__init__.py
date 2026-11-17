@@ -3,6 +3,7 @@
 from .assignment import associate_frames
 from .cost import CostFunction, GeometrySemanticCost, PositionShapeCost
 from .events import LineageEvent, SplitMergeConfig, events_to_table, resolve_splits_and_merges
+from .gap_closing import GapCloseRecord, GapClosingConfig, resolve_track_gaps
 from .kinematics import (
     GrainKinematics,
     KinematicsSummary,
@@ -24,6 +25,8 @@ from .synthetic import generate_crossing_scenario, generate_fracture_scenario
 
 __all__ = [
     "CostFunction",
+    "GapCloseRecord",
+    "GapClosingConfig",
     "GeometrySemanticCost",
     "GrainKinematics",
     "KinematicsSummary",
@@ -45,6 +48,7 @@ __all__ = [
     "kinematics_to_table",
     "precursors_to_table",
     "resolve_splits_and_merges",
+    "resolve_track_gaps",
     "summarize_kinematics",
     "summary_to_dict",
     "tracks_to_table",

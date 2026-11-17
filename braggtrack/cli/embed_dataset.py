@@ -10,9 +10,10 @@ import numpy as np
 
 from braggtrack.cli._utils import load_feature_csv, synth_volume_from_file
 from braggtrack.io import (
+    LazyVolume,
     MissingH5DependencyError,
     discover_operando_scans,
-    load_primary_volume,
+    open_lazy_volume,
     resolve_dataset_root,
 )
 from braggtrack.semantic import DEFAULT_DINO_MODEL, crop_spot_cube, make_multiview_encoder, orthogonal_mips
@@ -83,38 +84,39 @@ def main(argv: list[str] | None = None) -> int:
             return 1
 
         try:
-            volume = load_primary_volume(scan_file.path)
+            lazy_vol = open_lazy_volume(scan_file.path)
         except MissingH5DependencyError:
-            volume = synth_volume_from_file(scan_file.path)
+            lazy_vol = LazyVolume.from_array(synth_volume_from_file(scan_file.path))
         except (KeyError, ValueError):
             if not args.allow_synthetic_fallback:
                 raise
-            volume = synth_volume_from_file(scan_file.path)
+            lazy_vol = LazyVolume.from_array(synth_volume_from_file(scan_file.path))
 
-        if volume.shape != labels_full.shape:
-            print(
-                json.dumps(
-                    {
-                        "error": "Volume/labels shape mismatch",
-                        "scan": name,
-                        "volume": list(volume.shape),
-                        "labels": list(labels_full.shape),
-                    }
+        with lazy_vol:
+            if lazy_vol.shape != labels_full.shape:
+                print(
+                    json.dumps(
+                        {
+                            "error": "Volume/labels shape mismatch",
+                            "scan": name,
+                            "volume": list(lazy_vol.shape),
+                            "labels": list(labels_full.shape),
+                        }
+                    )
                 )
-            )
-            return 1
+                return 1
 
-        label_ids: list[int] = []
-        vectors: list[np.ndarray] = []
+            label_ids: list[int] = []
+            vectors: list[np.ndarray] = []
 
-        for row in rows:
-            lid = int(row["label"])
-            mip_mu, mip_chi, mip_d = orthogonal_mips(
-                crop_spot_cube(volume, labels_full, lid, row, margin=max(0, args.margin))[0]
-            )
-            vec = enc.embed(mip_mu, mip_chi, mip_d)
-            label_ids.append(lid)
-            vectors.append(vec)
+            for row in rows:
+                lid = int(row["label"])
+                mip_mu, mip_chi, mip_d = orthogonal_mips(
+                    crop_spot_cube(lazy_vol, labels_full, lid, row, margin=max(0, args.margin))[0]
+                )
+                vec = enc.embed(mip_mu, mip_chi, mip_d)
+                label_ids.append(lid)
+                vectors.append(vec)
 
         if not vectors:
             dim = 384
