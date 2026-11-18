@@ -302,7 +302,8 @@ def compute_grain_kinematics(
             dtype=np.float64,
         )
         e3 = shape_eigs[:, 2]
-        anisotropy = np.where(e3 > 0, shape_eigs[:, 0] / e3, 1.0)
+        anisotropy = np.ones(n, dtype=np.float64)
+        np.divide(shape_eigs[:, 0], e3, out=anisotropy, where=e3 > 1e-6)
         cov_trace = eigs.sum(axis=1)
 
         results.append(

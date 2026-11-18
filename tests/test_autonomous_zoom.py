@@ -262,3 +262,31 @@ def test_watch_autonomous_cli_replay_and_watch_modes(tmp_path: Path) -> None:
     assert rc_w == 0
     watch_steps = json.loads((out_watch / "autonomous_steps.json").read_text(encoding="utf-8"))
     assert len(watch_steps) == 4
+
+
+def test_forecast_1d_gp_n2_shrinkage_and_n3_linear_recovery() -> None:
+    """Verify mathematical n=2 zero-mean velocity shrinkage (0.5x) and unshrunk n>=3 WLS linear recovery."""
+    from braggtrack.autonomous import forecast_1d_gp
+
+    # At n=2 (dof=0) with equal weights, slope is shrunk by 0.5x around (t_bar=-0.5, y_bar=12):
+    # y_hat(2.0) = 12.0 + 0.5 * 4.0 * (2.0 - 0.5) = 15.0 (vs 18.0 unshrunk OLS)
+    pred_n2, std_n2 = forecast_1d_gp(
+        np.array([0.0, 1.0]),
+        np.array([10.0, 14.0]),
+        np.array([0.2, 0.2]),
+        2.0,
+        min_std_floor=0.05,
+    )
+    assert pred_n2 == pytest.approx(15.0, abs=1e-4)
+    assert std_n2 > 0.2
+
+    # At n>=3 (dof>=1), exact linear motion is extrapolated without 0.5x shrinkage
+    pred_n4, std_n4 = forecast_1d_gp(
+        np.array([0.0, 1.0, 2.0, 3.0]),
+        np.array([10.0, 14.0, 18.0, 22.0]),
+        np.array([0.1, 0.1, 0.1, 0.1]),
+        4.0,
+        min_std_floor=0.05,
+    )
+    assert pred_n4 == pytest.approx(26.0, abs=1e-3)
+    assert std_n4 > 0.05

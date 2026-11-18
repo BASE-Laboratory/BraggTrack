@@ -172,7 +172,13 @@ def _seed_floor_from_response(
         return float("inf")
     max_val = float(response_foreground.max())
     min_val = float(response_foreground.min())
-    if response_foreground.size >= _PERCENTILE_MIN_FOREGROUND:
+    tail_frac = max(1.0 - float(seed_response_percentile) / 100.0, 1e-4)
+    min_fg_for_pct = (
+        max(_PERCENTILE_MIN_FOREGROUND, int(math.ceil(16.0 / tail_frac)))
+        if seed_response_percentile > 0.0
+        else _PERCENTILE_MIN_FOREGROUND
+    )
+    if response_foreground.size >= min_fg_for_pct:
         peak_ref = float(np.percentile(response_foreground, _ROBUST_PEAK_PERCENTILE))
         floor_f = seed_peak_fraction * peak_ref
         floor_p = float(np.percentile(response_foreground, seed_response_percentile))

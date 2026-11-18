@@ -4,7 +4,7 @@ from .beamline import BeamlineAdapter
 from .crystallography import DetectorGeometry, annotate_crystallographic_columns
 from .discovery import discover_operando_scans
 from .export import IMAGED11_COLUMNS, export_imaged11_flt, export_nexus_process, read_imaged11_flt
-from .lazy import LazyVolume, open_lazy_volume, otsu_threshold_chunked
+from .lazy import LazyVolume, detector_foreground_threshold_chunked, open_lazy_volume, otsu_threshold_chunked
 from .models import AxisCalibration, AxisSpec, ExperimentSequence, ScanVolumeMeta
 from .nexus import (
     MissingH5DependencyError,
@@ -40,6 +40,7 @@ __all__ = [
     "annotate_crystallographic_columns",
     "annotate_tracks_with_stimulus",
     "default_dataset_root",
+    "detector_foreground_threshold_chunked",
     "discover_operando_scans",
     "discover_primary_volume_path",
     "export_imaged11_flt",

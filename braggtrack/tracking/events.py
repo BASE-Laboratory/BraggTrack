@@ -223,10 +223,12 @@ def resolve_splits_and_merges(
             for v in list(G.successors(u))
             if v in scan_t1_nodes and G.edges[u, v].get("edge_type", "continuation") == "continuation"
         ]
+        provisional_severed: list[tuple[str, str, dict[str, Any], Any, int, int]] = []
         for u, v in existing_edges:
             uv_res = _pair_distance_and_sim(G.nodes[u], G.nodes[v], cfg)
-            sever = uv_res is None
-            if not sever and uv_res is not None:
+            hard_sever = uv_res is None
+            soft_sever = False
+            if not hard_sever and uv_res is not None:
                 d_uv = uv_res[0]
                 min_u_other = min(
                     (
@@ -245,8 +247,11 @@ def resolve_splits_and_merges(
                     default=math.inf,
                 )
                 if min_u_other < 0.5 * d_uv and min_v_other < 0.5 * d_uv:
-                    sever = True
-            if sever:
+                    soft_sever = True
+            if hard_sever or soft_sever:
+                edata_saved = dict(G.edges[u, v])
+                prev_u_event = G.nodes[u].get("event", TrackEvent.CONTINUED)
+                u_tid = int(G.nodes[u]["track_id"])
                 G.remove_edge(u, v)
                 G.nodes[u]["event"] = TrackEvent.TERMINATED
                 old_v_tid = int(G.nodes[v]["track_id"])
@@ -254,6 +259,8 @@ def resolve_splits_and_merges(
                 next_tid += 1
                 _propagate_track_id(G, v, old_v_tid, fresh_tid)
                 G.nodes[v]["event"] = TrackEvent.BORN
+                if soft_sever:
+                    provisional_severed.append((u, v, edata_saved, prev_u_event, u_tid, fresh_tid))
 
         # --- Pass 1: Splits (1 -> 2+) ---
         unmatched_children = [nid for nid in scan_t1_nodes if G.in_degree(nid) == 0]
@@ -452,6 +459,15 @@ def resolve_splits_and_merges(
                 )
             )
             next_event_id += 1
+
+        # Restore provisionally severed 1-to-1 edges if neither endpoint joined a split or merge
+        for u, v, edata_saved, prev_u_event, u_tid, fresh_tid in provisional_severed:
+            if G.out_degree(u) == 0 and G.in_degree(v) == 0:
+                G.add_edge(u, v, **edata_saved)
+                G.nodes[u]["event"] = prev_u_event
+                G.nodes[v]["event"] = TrackEvent.CONTINUED
+                if G.nodes[v].get("track_id") == fresh_tid:
+                    _propagate_track_id(G, v, fresh_tid, u_tid)
 
     G.graph["lineage_events"] = events
     return events

@@ -56,8 +56,13 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Optional external operando CSV/TSV/Biologic .mpt log to synchronize with diffraction scans",
     )
-    parser.add_argument("--cost-alpha", type=float, default=1.0, help="Geometry weight in semantic cost")
-    parser.add_argument("--cost-beta", type=float, default=0.25, help="Semantic embedding weight in tracking cost")
+    parser.add_argument("--cost-alpha", type=float, default=1.0, help="Geometry weight in association cost")
+    parser.add_argument(
+        "--cost-beta",
+        type=float,
+        default=0.0,
+        help="Optional visual descriptor weight (0.0 = classical geometry only, skips DINOv2 embedding stage)",
+    )
     parser.add_argument("--max-gap", type=int, default=0, help="Max missing intermediate scans to bridge (0 disables)")
     parser.add_argument(
         "--split-max-distance", type=float, default=25.0, help="Max centroid distance for splits/merges"
@@ -304,7 +309,7 @@ def main(argv: list[str] | None = None) -> int:
             "--outdir",
             str(evt_dir),
             "--backend",
-            str(cfg["backend"]),
+            str(cfg["backend"]) if need_embed else "none",
             "--model",
             str(cfg["model"]),
             "--cost-alpha",

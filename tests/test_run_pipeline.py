@@ -88,6 +88,26 @@ class TestRunPipelineAndAblationCI(unittest.TestCase):
                 self.assertEqual(len(run["fragmentation_ratio_ci95"]), 2)
                 self.assertIn("id_switch_rate_ci95", run)
 
+    def test_run_pipeline_default_skips_embedding_stage(self) -> None:
+        volumes, _, _, _ = generate_fracture_scenario(n_scans=4, seed=19)
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            data_dir = tmp_path / "operando_classical"
+            for idx, vol in enumerate(volumes):
+                sdir = data_dir / f"scan{idx + 1:04d}"
+                sdir.mkdir(parents=True)
+                with h5py.File(sdir / "pco_nf.h5", "w") as h5:
+                    h5.create_dataset("/entry_0000/ESRF-ID03/pco_nf/data", data=vol.astype(np.float32))
+
+            out_dir = tmp_path / "pipeline_classical_out"
+            rc = run_pipeline.main([str(data_dir), "--outdir", str(out_dir)])
+            self.assertEqual(rc, 0)
+            manifest = json.loads((out_dir / "run_manifest.json").read_text())
+            self.assertEqual(manifest["config"]["cost_beta"], 0.0)
+            self.assertNotIn("embed", manifest["stage_timings_sec"])
+            self.assertIsNone(manifest["artifacts"]["embedding_summary"])
+            self.assertTrue(Path(manifest["artifacts"]["kinematics_csv"]).exists())
+
 
 if __name__ == "__main__":
     unittest.main()

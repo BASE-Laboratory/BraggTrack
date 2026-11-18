@@ -74,11 +74,22 @@ def forecast_1d_gp(
     tau = (t_arr - t_last) / dt_scale
     tau_star = (float(target_time) - t_last) / dt_scale
 
-    # Weighted linear basis H = [1, tau] with mild ridge on slope when n == 2
+    # Weighted linear basis H = [1, tau]. When n == 2 (dof == 0), there are zero residual
+    # degrees of freedom to separate physical drift from watershed boundary jitter, and
+    # unregularized 2-point extrapolation amplifies observation variance by 5x. A zero-mean
+    # Gaussian velocity prior matching the marginal slope precision shrinks noisy 2-point
+    # slopes by 0.5x around the precision-weighted mean (cutting 1-step noise variance from
+    # 5*sigma^2 to 1.625*sigma^2) until n >= 3 scans exist.
     weights = 1.0 / np.maximum(s_arr * s_arr, 1e-18)
     H = np.column_stack([np.ones_like(tau), tau])
     HWH = (H.T * weights) @ H
-    ridge = np.diag([1e-12, 1e-9 if n >= 3 else 1e-6])
+    if n == 2:
+        tau_span2 = max(float((tau[1] - tau[0]) ** 2), 1e-12)
+        w_slope_eff = float((weights[0] * weights[1]) / max(weights[0] + weights[1], 1e-18)) * tau_span2
+        slope_ridge = max(w_slope_eff, 1e-6)
+    else:
+        slope_ridge = 1e-9
+    ridge = np.diag([1e-12, slope_ridge])
     cov_beta = np.linalg.pinv(HWH + ridge)
     beta = cov_beta @ ((H.T * weights) @ y_arr)
 

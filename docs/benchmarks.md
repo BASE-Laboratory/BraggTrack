@@ -76,60 +76,39 @@ To isolate when pretrained multi-view morphological features genuinely outperfor
 
 ---
 
-## 3. ESRF-ID03 Operando DFXM Case Study (`data/sample_operando/`)
+## 3. Bundled Real-Detector Audit (`data/sample_operando/` — 3 ESRF-ID03 `pco_nf` Scans)
 
-We executed the complete **BraggTrack v0.4.0** batched pipeline with real **`facebook/dinov2-small`** embeddings, multi-scan gap closing (`--max-gap 1`), interactive HTML reporting (`--report`), `ImageD11` `.flt` export, and NeXus `NXprocess` HDF5 archival on the bundled 3-scan **ESRF-ID03** near-field PCO dataset (`3` scans $\times$ `100 x 250 x 250` `uint16` cubes, ~`20 MB` compressed HDF5):
+The bundled [`data/sample_operando/`](../data/sample_operando/README.md) archive contains `3` consecutive ESRF-ID03 near-field sCMOS (`pco_nf`) scans (`100 x 250 x 250` `uint16`, dark pedestal `180.0 ± 16.3 ADU`, no motor calibration or potentiostat log):
 
 ```bash
 braggtrack-run data/sample_operando \
-    --outdir artifacts/esrf_id03_dinov2 \
-    --backend torch \
-    --model facebook/dinov2-small \
-    --max-gap 1 \
+    --outdir artifacts/esrf_id03_classical \
     --report \
-    --export-nexus artifacts/esrf_id03_dinov2/esrf_id03.nxs \
-    --export-imaged11 artifacts/esrf_id03_dinov2/esrf_id03.flt
+    --export-nexus artifacts/esrf_id03_classical/esrf_id03.nxs \
+    --export-imaged11 artifacts/esrf_id03_classical/esrf_id03.flt
 ```
 
-### 3.1 CPU Stage-Timing Profile (`v0.3.0` Sequential vs. `v0.4.0` Batched)
+### 3.1 Validated Real-Detector Findings & Scope Boundaries
 
-| Pipeline Stage | `v0.3.0` (CPU) | **`v0.4.0` Batched (CPU)** | Share of Run | Primary Workload |
-| :--- | :---: | :---: | :---: | :--- |
-| **`validate`** | `0.043 s` | **`0.044 s`** | `0.1%` | NeXus `/entry_0000/ESRF-ID03/pco_nf/data` discovery & SHA-256 verification |
-| **`segment`** | `13.48 s` | **`12.23 s`** | `25.3%` | Chunked lazy Otsu (`LazyVolume`) + 3D LoG + watershed + Poisson $\sigma$ (`[18, 17, 15]` spots) |
-| **`embed`** | `18.35 s` | **`15.70 s` (`-14.4%`)** | `32.4%` | Lazy ROI cropping + batched `embed_batch` (`facebook/dinov2-small`, `50` spots $\times$ `1152`-d) |
-| **`track`** | `0.024 s` | **`0.029 s`** | `0.06%` | Hungarian matching (`assignment_margin`) + Jaqaman gap closing + `lineage_strain` & rates |
-| **`events`** | `20.23 s` | **`17.80 s` (`-12.0%`)** | `36.8%` | `1 -> 2` / `2 -> 1` lineage + batched `extract_patch_features_batch` & $O(1)$-RAM `roi_cache` |
-| **`report` + exports** | `3.04 s` | **`2.57 s`** | `5.3%` | Self-contained `report.html`, publication PNGs, `esrf_id03.flt`, and `esrf_id03.nxs` |
-| **Total** | `55.17 s` | **`48.44 s` (`-12.2%`)** | **`100.0%`** | Full 3-scan operando DFXM workflow on CPU (no GPU required) |
-
-### 3.2 Detected Lineage Events & Persistent Precursor Candidates
-
-- **Split Candidates (`events.csv`):**
-   - **Event 1 (`scan 0 -> 1`):** Parent **Track `6`** (`s0_i5`) $\to$ Daughters **Track `32`** (`s1_i11`) & **Track `34`** (`s1_i9`), intensity partition ratio `1.434`, mean daughter separation `18.64 px`, **DINOv2 multi-view cosine similarity `0.7561`**.
-   - **Event 2 (`scan 1 -> 2`):** Parent **Track `21`** (`s1_i1`) $\to$ Daughters **Track `36`** (`s2_i1`) & **Track `44`** (`s2_i13`), intensity partition ratio `1.258`, mean daughter separation `20.11 px`, **DINOv2 multi-view cosine similarity `0.6837`**.
-- **Top Persistent Precursor Tracks (`precursors.csv`, `min_persistence = 2` scans):**
-   1. **Track `14`** (`rank 1`): Active across all `3` scans (`onset_scan=0`, `peak_scan=1`), `peak_score = 0.8789`, `mean_active_score = 0.7775`, `max_anisotropy = 5.45`, `max_spread_growth = +106%`, `confidence = 0.8555`.
-   2. **Track `34`** (`rank 2`, split daughter of Track `6`): Active across `scans 1-2`, `peak_score = 0.9023`, extreme streak elongation (`max_anisotropy = 26.78`), `max_spread_growth = +129%`, `confidence = 0.8119`.
-   3. **Track `27`** (`rank 3`): Active across `scans 1-2`, `peak_score = 0.6710`, `max_anisotropy = 16.00`, `confidence = 0.6534`.
-   4. **Track `29`** (`rank 4`): Active across `scans 1-2`, `peak_score = 0.6668`, `max_anisotropy = 6.67`, `confidence = 0.6490`.
+1. **sCMOS Pedestal-Guarded 3D Segmentation (`detector_foreground_threshold`):** Raw 3D Otsu places its threshold inside the `180 ADU` read-noise peak (`181.64 ADU`), labeling `46.4%` of all voxels (`25,201 / 62,500` pixels on empty slice `z = 50`) and forming `1.27M`-voxel Voronoi noise sponges. Enforcing a robust median + `5 * MAD` floor (`261.26 ADU` dense / `265.1 ADU` chunked) drops empty-slice false foreground to **`0` voxels (`0.00%`)** and isolates `[18, 21, 17]` bounded 3D instances (`max_voxels = 3,052`).
+2. **Visual ViT Embedding Ablation (`facebook/dinov2-small`):** Across `scan0001`–`scan0003`, `cost_beta = 0.0` (classical geometry + log-intensity conservation) and `cost_beta in {0.25, 1.0, 5.0}` (`facebook/dinov2-small`) produce **`24 / 24` (`100%`) identical continuation edges**, while `DINOv2` increases CPU runtime by **`5.6x`** (`6.36 s/scan` vs `1.14 s/scan`) and degrades accuracy when used without geometry (`cost_alpha = 0`). Both `braggtrack-run` and `CausalStreamingTracker` therefore default to `cost_beta = 0.0`.
+3. **Evidentiary Scope of 3 Scans:** While isolated / moderate-drift reflections link cleanly (`0` cross-rocking-layer teleports, `0` single-slice cosmic-ray links), dense co-moving layers (`mu ~ 95–97`) exhibit collective rigid drift (`+11 to +24 px/scan`) exceeding inter-spot spacing (`12–21 px`) alongside genuine watershed overlap in `scan0003`. Furthermore, `3` scans (`n = 2` training points, `dof = 0`, zero cleavage events, no electrochemistry) **do not** validate nonlinear `Matérn` GP trajectory forecasting or fracture precursor recall/precision; those require longer multi-scan *operando* cycling sequences.
 
 ---
 
-## 4. Autonomous "Scout-and-Zoom" DFXM Causal Replay Benchmark (`v0.4.0`)
+## 4. Synthetic Closed-Loop "Scout-and-Zoom" Replay Smoke Test (`v0.4.0`)
 
-To validate online closed-loop target selection before synchrotron beamtime, `evaluate_causal_replay()` (`braggtrack.autonomous.replay` / `braggtrack-watch --mode replay`) streams a 6-scan operando charging sequence (`3.95 V -> 4.27 V`, `3 min/scan` cadence, mimicking Ni-rich `H2 -> H3` $c$-axis contraction) strictly scan-by-scan through `CausalStreamingTracker` using real **`facebook/dinov2-small`** (`backend="torch"`).
+To verify online causal plumbing (`evaluate_causal_replay()` in `braggtrack.autonomous.replay` / `braggtrack-watch --mode replay`) under controlled ground truth, this synthetic unit scenario streams a constructed 6-scan sequence (`3.95 V -> 4.27 V` synthetic stimulus log) scan-by-scan through `CausalStreamingTracker`:
 
-The scene contains three competing reflections under a strict `zoom_budget = 1` acquisition budget:
-- **Target Grain (Track `3`):** Develops persistent bimodal mosaicity across `scans 1–3` while drifting rapidly along $d$, then fractures (`1 -> 2` split) between `scan 3` (`4.21 V`) and `scan 4` (`4.24 V`).
-- **Bright Distractor:** Higher integrated intensity than the target grain, remains isotropic and never fractures.
-- **High-Strain Distractor:** Undergoes larger rigid-body lattice shift $|\varepsilon|$ without internal mosaicity broadening or fracture.
+- **Target Grain (Track `3`):** Synthetic bimodal mosaicity injected across `scans 1–3` while drifting along $d$, followed by a constructed `1 -> 2` split between `scan 3` and `scan 4`.
+- **Bright Distractor & High-Strain Distractor:** Non-splitting synthetic control Gaussians.
 
-| Autonomous Policy (`zoom_budget = 1`) | Zooms Fired | Pre-Split Capture Recall | Pre-Split Precision | Lead Scans Before Split | Electrochemical Lead ($\Delta E$) | Velocity-Extrapolated Setpoint Hit Rate | Mean Causal Step Latency (`dinov2-small`, CPU) |
-| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| **`braggtrack_autonomous`** | `1` | **`1.00`** | **`1.00`** | **`2.0` scans** | **`80.0 mV`** (`4.16 V` vs `4.24 V`) | **`1.00`** | **`1.39 s / scan`** (`max 1.71 s`) |
-| `brightest_intensity` | `1` | `0.00` | `0.00` | `0.0` | — | `1.00` | — |
-| `strain_only` | `1` | `0.00` | `0.00` | `0.0` | — | `1.00` | — |
+| Synthetic Replay Policy (`zoom_budget = 1`) | Zooms Fired | Pre-Split Capture (Synthetic `n = 1`) | Velocity-Extrapolated Setpoint Hit Rate | Mean Causal Step Latency (`cost_beta = 0.0`, CPU) |
+| :--- | :---: | :---: | :---: | :---: |
+| **`braggtrack_autonomous`** | `1` | `1 / 1` (`2` scans pre-split) | `1.00` | `0.08 s / scan` |
+| `brightest_intensity` | `1` | `0 / 1` | `1.00` | — |
+| `strain_only` | `1` | `0 / 1` | `1.00` | — |
 
-At `1.39 s / scan` on CPU (`< 1%` of a typical `180 s` wide-field scouting scan), `CausalStreamingTracker` leaves ample margin for diffractometer slewing and objective-lens insertion while predicting velocity-compensated `bliss_dfxm_zoom.v1` motor setpoints before grain microcracking occurs.
+*(Note: Because the pre-split broadening and split in Section 4 are synthetically constructed, this test verifies strict causal execution and setpoint mechanics rather than empirical precursor sensitivity on real crystals.)*
+
 

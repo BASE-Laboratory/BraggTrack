@@ -145,3 +145,62 @@ def otsu_threshold_chunked(
 
     bin_centers = 0.5 * (edges[:-1] + edges[1:])
     return float(threshold_otsu(hist=(counts, bin_centers)))
+
+
+def _histogram_quantile(counts: np.ndarray, edges: np.ndarray, q: float) -> float:
+    """Linearly interpolate quantile ``q in [0, 1]`` from a 1D histogram."""
+    total = float(np.sum(counts))
+    if total <= 0.0:
+        return float(edges[0])
+    target = float(np.clip(q, 0.0, 1.0)) * total
+    cum = np.cumsum(counts, dtype=np.float64)
+    idx = int(np.searchsorted(cum, target, side="left"))
+    idx = min(max(idx, 0), len(counts) - 1)
+    prev = float(cum[idx - 1]) if idx > 0 else 0.0
+    c_bin = float(counts[idx])
+    frac = (target - prev) / c_bin if c_bin > 0.0 else 0.0
+    return float(edges[idx] + np.clip(frac, 0.0, 1.0) * (edges[idx + 1] - edges[idx]))
+
+
+def detector_foreground_threshold_chunked(
+    volume: LazyVolume | np.ndarray,
+    *,
+    nbins: int = 4096,
+    chunk_z: int = 32,
+    bg_sigma: float = 5.0,
+) -> float:
+    """Streaming z-slab Otsu threshold guarded by a lower-quartile read-noise floor."""
+    lazy = volume if isinstance(volume, LazyVolume) else LazyVolume.from_array(np.asarray(volume))
+    nz, ny, nx = lazy.shape
+    total_vox = nz * ny * nx
+    if total_vox == 0:
+        raise ValueError("Otsu threshold requires at least one value.")
+
+    vmin = float("inf")
+    vmax = float("-inf")
+    for slab in lazy.iter_z_chunks(chunk_z=chunk_z):
+        s_min = float(np.min(slab))
+        s_max = float(np.max(slab))
+        if s_min < vmin:
+            vmin = s_min
+        if s_max > vmax:
+            vmax = s_max
+
+    if vmin == vmax:
+        return float(vmin)
+
+    edges = np.linspace(vmin, vmax, max(16, int(nbins)) + 1, dtype=np.float64)
+    counts = np.zeros(len(edges) - 1, dtype=np.int64)
+    for slab in lazy.iter_z_chunks(chunk_z=chunk_z):
+        c, _ = np.histogram(slab, bins=edges)
+        counts += c
+
+    bin_centers = 0.5 * (edges[:-1] + edges[1:])
+    raw_otsu = float(threshold_otsu(hist=(counts, bin_centers)))
+    if bg_sigma <= 0.0 or total_vox < 4:
+        return raw_otsu
+
+    q25 = _histogram_quantile(counts, edges, 0.25)
+    q50 = _histogram_quantile(counts, edges, 0.50)
+    sigma_bg = 1.482602218505602 * max(0.0, q50 - q25)
+    return float(max(raw_otsu, q50 + float(bg_sigma) * sigma_bg))

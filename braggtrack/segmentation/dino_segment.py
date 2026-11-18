@@ -287,6 +287,7 @@ def segment_dino(
     threshold_fraction: float = 1.0,
     min_overlap_fraction: float = 0.2,
     axis: int = 0,
+    bg_sigma: float = 5.0,
 ) -> DinoSegmentationResult:
     """Segment a 3D volume using DINO patch-level features + HDBSCAN.
 
@@ -308,16 +309,18 @@ def segment_dino(
         Minimum overlap for stitching 2D labels across slices.
     axis
         Axis to slice along (0 = mu/z, typically the narrowest).
+    bg_sigma
+        Detector read-noise floor multiplier above median pedestal (0 disables).
     """
     from sklearn.decomposition import PCA
 
-    from braggtrack.segmentation.otsu import otsu_threshold
+    from braggtrack.segmentation.otsu import detector_foreground_threshold
     from braggtrack.semantic.dino import make_patch_encoder
 
     volume = np.asarray(volume, dtype=np.float64)
     encoder = make_patch_encoder(backend, model_name=model_name, torch_device=torch_device)
 
-    raw_threshold = otsu_threshold(volume.ravel())
+    raw_threshold = detector_foreground_threshold(volume.ravel(), bg_sigma=bg_sigma)
     threshold = raw_threshold * threshold_fraction
 
     features, slice_hw = _extract_slice_features(volume, encoder, axis=axis)
