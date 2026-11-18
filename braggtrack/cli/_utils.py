@@ -55,7 +55,7 @@ def write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
         with path.open("w", newline="") as fh:
             fh.write("")
         return
-    fieldnames = list(rows[0].keys())
+    fieldnames = list(dict.fromkeys(k for r in rows for k in r))
     with path.open("w", newline="") as fh:
         writer = csv.DictWriter(fh, fieldnames=fieldnames)
         writer.writeheader()

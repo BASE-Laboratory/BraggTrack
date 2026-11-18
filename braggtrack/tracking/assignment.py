@@ -69,3 +69,34 @@ def associate_frames(
     unmatched_t1 = [j for j in range(n_t1) if j not in matched_t1]
 
     return matches, unmatched_t, unmatched_t1
+
+
+def compute_assignment_margins(
+    spots_t: list[dict],
+    spots_t1: list[dict],
+    matches: list[tuple[int, int]],
+    cost_fn: CostFunction,
+) -> dict[tuple[int, int], tuple[float, float]]:
+    """Compute ``(assigned_cost, margin)`` for each accepted Hungarian match.
+
+    The margin is ``min(second_best_row - c_ij, second_best_col - c_ij)``,
+    measuring how close a competing spot in frame *t* or *t+1* came to
+    claiming the link (``math.inf`` when no finite competitor exists).
+    """
+    if not matches or not spots_t or not spots_t1:
+        return {}
+
+    raw = np.asarray(cost_fn.pairwise_cost_matrix(spots_t, spots_t1), dtype=np.float64)
+    n_t, n_t1 = raw.shape
+    out: dict[tuple[int, int], tuple[float, float]] = {}
+    for r, c in matches:
+        c_ij = float(raw[r, c])
+        if not math.isfinite(c_ij):
+            out[(r, c)] = (math.inf, 0.0)
+            continue
+        row_others = [float(raw[r, k]) for k in range(n_t1) if k != c and math.isfinite(raw[r, k])]
+        col_others = [float(raw[k, c]) for k in range(n_t) if k != r and math.isfinite(raw[k, c])]
+        alt_costs = row_others + col_others
+        margin = (min(alt_costs) - c_ij) if alt_costs else math.inf
+        out[(r, c)] = (c_ij, float(margin))
+    return out

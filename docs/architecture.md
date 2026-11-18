@@ -6,17 +6,18 @@ This document describes how the repository is structured, how data flows through
 
 ```text
 BraggTrack/
-├── braggtrack/           # Installable Python package (v0.3.0)
-│   ├── io/               # Discovery, LazyVolume streaming, AxisCalibration, DetectorGeometry, ImageD11 & NeXus export
-│   ├── segmentation/     # Classical 3D LoG+watershed, chunked Otsu + threshold smoothing, experimental DINO segmenter
-│   ├── semantic/         # Orthogonal (mu, chi, d) MIPs + frozen ViT / patch encoders (DINOv2 default, DINOv3, mock)
-│   ├── tracking/         # Costs, Hungarian assignment, multi-scan gap closing, kinematics, split/merge DAG, precursors
-│   ├── viz/              # Publication plots (MIPs, Lineage DAG, Strain fans, Precursors) + interactive HTML 4D Explorer
-│   └── cli/              # Thin argparse entry points (9 CLIs) + reproducible run_pipeline orchestrator
+├── braggtrack/           # Installable Python package (v0.4.0)
+│   ├── io/               # Discovery, darfix/BLISS auto-calibration, LazyVolume, OperandoLog, ImageD11 & NeXus export
+│   ├── segmentation/     # Classical 3D LoG+watershed, Poisson centroid errors, experimental batched DINO segmenter
+│   ├── semantic/         # Orthogonal (mu, chi, d) MIPs + batched ViT / patch encoders (DINOv2 default, DINOv3, mock)
+│   ├── tracking/         # Costs, Hungarian margin, gap closing, lineage_strain & rates, split/merge DAG, precursors
+│   ├── autonomous/       # tell/ask/report CausalStreamingTracker, heteroscedastic GP forecaster, UCB/EI ZoomTriggerPolicy
+│   ├── viz/              # Publication plots (MIPs, Lineage, Operando dQ/dV, Precursors) + offline HTML 4D Explorer
+│   └── cli/              # Thin argparse entry points (10 CLIs incl. braggtrack-watch & braggtrack-run)
 ├── data/
 │   └── sample_operando/  # Bundled ESRF-ID03 Ni-rich cathode operando scans (scan0001..scan0003)
 ├── notebooks/            # End-to-end demo and DINO vs. classical segmentation notebooks
-├── docs/                 # Architecture, quantitative benchmarks, figures, and coding practices
+├── docs/                 # Architecture, ecosystem positioning, quantitative benchmarks, figures, coding practices
 ├── scripts/              # 9 acceptance gates, 5-scenario benchmark suite, semantic ablation, ci_report.py
 ├── tests/                # Unit and acceptance test suite
 └── artifacts/            # Generated outputs (gitignored)
@@ -26,12 +27,13 @@ BraggTrack/
 
 | Layer | Responsibility | Key Types / Functions | Depends on |
 |---|---|---|---|
-| **io** | Discover scans, stream `LazyVolume` HDF5 slices & chunked Otsu histograms, calibrate `(mu, chi, d)` & `(2theta, eta, d, \|Q\|)`, export `ImageD11` `.flt` & NeXus `.nxs` | `LazyVolume`, `otsu_threshold_chunked`, `AxisCalibration`, `DetectorGeometry`, `export_imaged11_flt`, `export_nexus_process` | `numpy`, `h5py` |
-| **segmentation** | Multi-scan threshold smoothing, 3D LoG + `h`-maxima + watershed (or experimental DINO + HDBSCAN), physical/voxel feature table | `segment_classical`, `smooth_thresholds`, `segment_dino`, `extract_instance_table` | `numpy`, `scipy`, `scikit-image`, `scikit-learn` |
-| **semantic** | Lazy ROI spot cropping, orthogonal MIPs, multi-view global embeddings & dense patch-token grids | `crop_spot_cube`, `orthogonal_mips`, `make_multiview_encoder`, `make_patch_encoder` | `numpy`, optional `torch` + `transformers` |
-| **tracking** | Vectorised geometry + semantic cost, Hungarian assignment, multi-scan gap closing (`max_gap`), per-grain kinematics, `1 -> 2+` split & `2+ -> 1` merge lineage, fracture precursors | `PositionShapeCost`, `GeometrySemanticCost`, `resolve_track_gaps`, `build_tracks`, `compute_grain_kinematics`, `resolve_splits_and_merges`, `compute_fracture_precursors` | `numpy`, `scipy`, `networkx` |
-| **viz** | Publication figures and zero-CDN offline interactive HTML 4D Lineage & Strain Explorer | `plot_lineage_dag`, `plot_kinematics_dashboard`, `plot_precursor_timeline`, `plot_spot_mip_card`, `generate_html_report` | `numpy`, optional `matplotlib` (HTML explorer uses stdlib only) |
-| **cli** | Parse args/JSON config, orchestrate stages, write CSV/JSON/NPZ/FLT/NXS/HTML artifacts and SHA-256 `run_manifest.json` | `segment_dataset`, `embed_dataset`, `track_dataset`, `detect_events`, `report_dataset`, `run_pipeline` | All of the above |
+| **io** | Discover scans (`SWMR`-ready), auto-extract `darfix`/BLISS `AxisCalibration`, stream `LazyVolume`, synchronize `.mpt`/`.csv` operando logs ($\mathrm{d}Q/\mathrm{d}V$), export `ImageD11` `.flt` & NeXus `.nxs` | `LazyVolume`, `otsu_threshold_chunked`, `AxisCalibration`, `load_operando_log`, `synchronize_stimulus_to_scans`, `DetectorGeometry`, `export_imaged11_flt`, `export_nexus_process` | `numpy`, `scipy`, `h5py` |
+| **segmentation** | Multi-scan threshold smoothing, `float32` 3D LoG + `h`-maxima + watershed, background pedestal subtraction, Poisson + quantization centroid error, standardized rocking-curve kurtosis $g_2$ & border truncation flags | `segment_classical`, `smooth_thresholds`, `segment_dino`, `extract_instance_table` | `numpy`, `scipy`, `scikit-image`, `scikit-learn` |
+| **semantic** | Lazy ROI spot cropping, aspect-preserving orthogonal MIPs, batched multi-view global embeddings (`embed_batch`) & batched dense patch-token grids (`extract_patch_features_batch`) | `crop_spot_cube`, `orthogonal_mips`, `make_multiview_encoder`, `make_patch_encoder` | `numpy`, optional `torch` + `transformers` |
+| **tracking** | Step-normalized unit-invariant geometry + semantic cost, Hungarian `assignment_margin`, multi-scan gap closing, ancestor `lineage_strain` + wall-clock `strain_rate_per_s`, `mechanical_split` vs. `phase_split` DAG, $O(1)$-RAM cached precursors | `PositionShapeCost`, `GeometrySemanticCost`, `resolve_track_gaps`, `build_tracks`, `compute_grain_kinematics`, `resolve_splits_and_merges`, `compute_fracture_precursors` | `numpy`, `scipy`, `networkx` |
+| **autonomous** | `Bluesky-Adaptive` style `tell / ask / report` $O(1)$ sliding-window causal streaming, heteroscedastic Universal Kriging GP trajectory forecasting, `UCB` / `EI` / `max_variance` Bayesian acquisition, motor/voltage/dose/beam-flux guardrails, and staged `replay`/`shadow`/`active` evaluation | `CausalStreamingTracker`, `forecast_grain_trajectory_gp`, `score_candidates_gp`, `ZoomTriggerPolicy`, `select_zoom_targets`, `evaluate_causal_replay` | `io`, `segmentation`, `semantic`, `tracking`, `scikit-learn` |
+| **viz** | Publication figures, 3-panel operando electrochemistry + fracture dashboards, and CSP-hardened zero-CDN offline interactive HTML 4D Lineage & Strain Explorer | `plot_lineage_dag`, `plot_kinematics_dashboard`, `plot_operando_strain_and_events`, `plot_precursor_timeline`, `plot_spot_mip_card`, `generate_html_report` | `numpy`, optional `matplotlib` (HTML explorer uses stdlib only) |
+| **cli** | Parse args/validated JSON config, orchestrate batch or HDF5-quiescent live-watch stages, write CSV/JSON/NPZ/FLT/NXS/JSONL/HTML artifacts and SHA-256 `run_manifest.json` | `segment_dataset`, `embed_dataset`, `track_dataset`, `detect_events`, `report_dataset`, `watch_autonomous`, `run_pipeline` | All of the above |
 
 **Rule of thumb:** keep **numeric kernels** and **typed data contracts** in subpackages; keep **CLI modules** as thin orchestration layers.
 

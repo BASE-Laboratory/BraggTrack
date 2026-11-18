@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "braggtrack"
-version = "0.3.0"
+version = "0.4.0"
 description = "Semantic 4D kinematics and fracture tracking for operando diffraction."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -61,6 +61,7 @@ braggtrack-embed-dataset = "braggtrack.cli.embed_dataset:main"
 braggtrack-events = "braggtrack.cli.detect_events:main"
 braggtrack-report = "braggtrack.cli.report_dataset:main"
 braggtrack-run = "braggtrack.cli.run_pipeline:main"
+braggtrack-watch = "braggtrack.cli.watch_autonomous:main"
 
 [tool.setuptools.packages.find]
 include = ["braggtrack*"]

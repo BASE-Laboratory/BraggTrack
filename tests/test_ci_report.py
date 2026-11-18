@@ -9,6 +9,7 @@ class CiReportTests(unittest.TestCase):
         env = os.environ.copy()
         env["PYTHONPATH"] = f".{os.pathsep}{env.get('PYTHONPATH', '')}"
         env["BRAGGTRACK_SKIP_TEST_MODULE"] = "test_ci_report"
+        env.setdefault("BRAGGTRACK_DINO_BACKEND", "mock")
         proc = subprocess.run(
             [sys.executable, "scripts/ci_report.py"],
             check=False,

@@ -9,6 +9,10 @@ from typing import Any, Literal
 import networkx as nx
 import numpy as np
 
+from .cost import _spot_scales
+
+SplitSubtype = Literal["mechanical_split", "phase_split", "mixed_split"]
+
 
 @dataclass(frozen=True)
 class SplitMergeConfig:
@@ -22,6 +26,8 @@ class SplitMergeConfig:
     max_intensity_ratio: float = 1.6
     min_fragment_share: float = 0.1
     min_semantic_similarity: float | None = None
+    normalize_by_step: bool = True
+    phase_split_ratio: float = 2.0
 
 
 @dataclass(frozen=True)
@@ -44,6 +50,9 @@ class LineageEvent:
     semantic_similarity: float | None = None
     confidence: float = 1.0
     timestamp: str | None = None
+    split_subtype: SplitSubtype | None = None
+    delta_orientation_norm: float = 0.0
+    delta_d_norm: float = 0.0
 
 
 def _spot_coords(node_data: dict[str, Any]) -> tuple[float, float, float]:
@@ -52,6 +61,40 @@ def _spot_coords(node_data: dict[str, Any]) -> tuple[float, float, float]:
         float(node_data["centroid_chi"]),
         float(node_data["centroid_d"]),
     )
+
+
+def _classify_split_subtype(
+    child_datas: list[dict[str, Any]],
+    *,
+    phase_split_ratio: float = 2.0,
+) -> tuple[SplitSubtype, float, float]:
+    """Disambiguate orientation cleavage (``mechanical_split``) vs two-phase ``d``-jump (``phase_split``)."""
+    max_orient = 0.0
+    max_d = 0.0
+    n_c = len(child_datas)
+    for i in range(n_c):
+        mu_i, chi_i, d_i = _spot_coords(child_datas[i])
+        smi, sci, sdi = _spot_scales(child_datas[i])
+        for j in range(i + 1, n_c):
+            mu_j, chi_j, d_j = _spot_coords(child_datas[j])
+            smj, scj, sdj = _spot_scales(child_datas[j])
+            dmu_n = abs(mu_i - mu_j) / (0.5 * (smi + smj))
+            dchi_n = abs(chi_i - chi_j) / (0.5 * (sci + scj))
+            dd_n = abs(d_i - d_j) / (0.5 * (sdi + sdj))
+            orient_sep = math.hypot(dmu_n, dchi_n)
+            if orient_sep > max_orient:
+                max_orient = orient_sep
+            if dd_n > max_d:
+                max_d = dd_n
+
+    ratio = max(1.05, float(phase_split_ratio))
+    if max_d >= ratio * max(max_orient, 1e-6):
+        subtype: SplitSubtype = "phase_split"
+    elif max_orient >= ratio * max(max_d, 1e-6):
+        subtype = "mechanical_split"
+    else:
+        subtype = "mixed_split"
+    return subtype, max_orient, max_d
 
 
 def _pair_distance_and_sim(
@@ -66,6 +109,12 @@ def _pair_distance_and_sim(
     dd = abs(d_a - d_b)
     if dmu > config.gate_mu or dchi > config.gate_chi or dd > config.gate_d:
         return None
+    if config.normalize_by_step:
+        sma, sca, sda = _spot_scales(a)
+        smb, scb, sdb = _spot_scales(b)
+        dmu /= 0.5 * (sma + smb)
+        dchi /= 0.5 * (sca + scb)
+        dd /= 0.5 * (sda + sdb)
     dist = math.sqrt(dmu * dmu + dchi * dchi + dd * dd)
     if dist > config.max_distance:
         return None
@@ -255,14 +304,22 @@ def resolve_splits_and_merges(
             if not valid_all:
                 continue
 
+            sorted_children = sorted(all_children)
+            subtype, d_orient_n, d_d_n = _classify_split_subtype(
+                [G.nodes[c] for c in sorted_children],
+                phase_split_ratio=cfg.phase_split_ratio,
+            )
+
             parent_tid = int(G.nodes[p_nid]["track_id"])
             G.nodes[p_nid]["lineage_role"] = "split_parent"
+            G.nodes[p_nid]["split_subtype"] = subtype
             child_tids: list[int] = []
-            for c_nid in sorted(all_children):
+            for c_nid in sorted_children:
                 if not G.has_edge(p_nid, c_nid):
-                    G.add_edge(p_nid, c_nid, edge_type="split")
+                    G.add_edge(p_nid, c_nid, edge_type="split", split_subtype=subtype)
                 else:
                     G.edges[p_nid, c_nid]["edge_type"] = "split"
+                    G.edges[p_nid, c_nid]["split_subtype"] = subtype
 
                 old_c_tid = int(G.nodes[c_nid]["track_id"])
                 if old_c_tid == parent_tid:
@@ -273,6 +330,7 @@ def resolve_splits_and_merges(
                     new_c_tid = old_c_tid
 
                 G.nodes[c_nid]["lineage_role"] = "split_child"
+                G.nodes[c_nid]["split_subtype"] = subtype
                 G.nodes[c_nid]["parent_track_ids"] = [parent_tid]
                 child_tids.append(new_c_tid)
 
@@ -288,7 +346,7 @@ def resolve_splits_and_merges(
                     parent_track_ids=(parent_tid,),
                     child_track_ids=tuple(child_tids),
                     parent_nodes=(p_nid,),
-                    child_nodes=tuple(sorted(all_children)),
+                    child_nodes=tuple(sorted_children),
                     centroid_mu=p_mu,
                     centroid_chi=p_chi,
                     centroid_d=p_d,
@@ -297,6 +355,9 @@ def resolve_splits_and_merges(
                     semantic_similarity=round(mean_sim, 4) if mean_sim is not None else None,
                     confidence=_event_confidence(mean_dist, cfg.max_distance, ratio, mean_sim),
                     timestamp=ts,
+                    split_subtype=subtype,
+                    delta_orientation_norm=round(d_orient_n, 4),
+                    delta_d_norm=round(d_d_n, 4),
                 )
             )
             next_event_id += 1
@@ -404,6 +465,7 @@ def events_to_table(events: list[LineageEvent]) -> list[dict[str, Any]]:
             {
                 "event_id": ev.event_id,
                 "event_type": ev.event_type,
+                "split_subtype": ev.split_subtype or "",
                 "scan_idx_from": ev.scan_idx_from,
                 "scan_idx_to": ev.scan_idx_to,
                 "timestamp": ev.timestamp or "",
@@ -416,6 +478,8 @@ def events_to_table(events: list[LineageEvent]) -> list[dict[str, Any]]:
                 "centroid_d": ev.centroid_d,
                 "intensity_ratio": ev.intensity_ratio,
                 "mean_distance": ev.mean_distance,
+                "delta_orientation_norm": ev.delta_orientation_norm,
+                "delta_d_norm": ev.delta_d_norm,
                 "semantic_similarity": ev.semantic_similarity if ev.semantic_similarity is not None else "",
                 "confidence": ev.confidence,
             }

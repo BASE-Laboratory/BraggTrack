@@ -40,6 +40,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Embedding backend (mock needs no PyTorch; torch uses DINOv2 default or custom --model)",
     )
     p.add_argument("--model", default=DEFAULT_DINO_MODEL, help="HF model id when backend=torch")
+    p.add_argument("--batch-size", type=int, default=32, help="Batch size for ViT MIP forward passes")
     p.add_argument(
         "--allow-synthetic-fallback",
         action="store_true",
@@ -107,23 +108,25 @@ def main(argv: list[str] | None = None) -> int:
                 return 1
 
             label_ids: list[int] = []
-            vectors: list[np.ndarray] = []
+            mips_batch: list[tuple[np.ndarray, np.ndarray, np.ndarray]] = []
 
             for row in rows:
                 lid = int(row["label"])
                 mip_mu, mip_chi, mip_d = orthogonal_mips(
                     crop_spot_cube(lazy_vol, labels_full, lid, row, margin=max(0, args.margin))[0]
                 )
-                vec = enc.embed(mip_mu, mip_chi, mip_d)
                 label_ids.append(lid)
-                vectors.append(vec)
+                mips_batch.append((mip_mu, mip_chi, mip_d))
 
-        if not vectors:
-            dim = 384
+        if mips_batch:
+            if hasattr(enc, "embed_batch"):
+                mat = enc.embed_batch(mips_batch, batch_size=max(1, args.batch_size))
+            else:
+                mat = np.stack([enc.embed(m0, m1, m2) for m0, m1, m2 in mips_batch], axis=0)
+            dim = int(mat.shape[1])
         else:
-            dim = int(vectors[0].shape[0])
-
-        mat = np.stack(vectors, axis=0) if vectors else np.zeros((0, dim), dtype=np.float32)
+            dim = 1152 if resolved_backend == "torch" else 384
+            mat = np.zeros((0, dim), dtype=np.float32)
         scan_out = outdir / name
         scan_out.mkdir(parents=True, exist_ok=True)
         np.savez_compressed(

@@ -10,7 +10,7 @@ import networkx as nx
 import numpy as np
 from scipy.optimize import linear_sum_assignment
 
-from .cost import CostFunction, GeometrySemanticCost, PositionShapeCost
+from .cost import CostFunction, GeometrySemanticCost, PositionShapeCost, _spot_eigs, _spot_scales
 from .lifecycle import TrackEvent
 
 
@@ -94,12 +94,18 @@ def _eval_gap_cost(
         if (dmu / step_scale) > geo.gate_mu or (dchi / step_scale) > geo.gate_chi or (dd / step_scale) > geo.gate_d:
             return math.inf
 
+        if geo.normalize_by_step:
+            smu, schi, sd = _spot_scales(u_data)
+            smv, schiv, sdv = _spot_scales(v_data)
+            dmu /= 0.5 * (smu + smv)
+            dchi /= 0.5 * (schi + schiv)
+            dd /= 0.5 * (sd + sdv)
+
         # Diffusive scaling (dx^2 / delta_t) keeps gap costs comparable to 1-step costs.
         pos_dist2 = (dmu**2 + dchi**2 + dd**2) / step_scale
-        deig1 = float(u_data.get("eig_1", 0.0)) - float(v_data.get("eig_1", 0.0))
-        deig2 = float(u_data.get("eig_2", 0.0)) - float(v_data.get("eig_2", 0.0))
-        deig3 = float(u_data.get("eig_3", 0.0)) - float(v_data.get("eig_3", 0.0))
-        shape_dist2 = deig1**2 + deig2**2 + deig3**2
+        eu = _spot_eigs(u_data, normalize_by_step=geo.normalize_by_step)
+        ev = _spot_eigs(v_data, normalize_by_step=geo.normalize_by_step)
+        shape_dist2 = (eu[0] - ev[0]) ** 2 + (eu[1] - ev[1]) ** 2 + (eu[2] - ev[2]) ** 2
         g_cost = geo.position_weight * pos_dist2 + geo.shape_weight * shape_dist2
         if beta == 0.0:
             return alpha * g_cost
@@ -206,6 +212,7 @@ def resolve_track_gaps(
     n_born = len(born_nodes)
     if n_term == 0 or n_born == 0:
         G.graph["gap_closures"] = []
+        G.graph["gap_closed_count"] = 0
         return []
 
     inadmissible = 1e12
@@ -272,4 +279,5 @@ def resolve_track_gaps(
         )
 
     G.graph["gap_closures"] = records
+    G.graph["gap_closed_count"] = len(records)
     return records

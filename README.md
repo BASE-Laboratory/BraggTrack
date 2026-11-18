@@ -12,15 +12,16 @@ Semantic 4D kinematics, multi-scan beam-dropout gap closing, grain lineage (`1 -
 
 ## Key Capabilities
 
-- **Beamline-scale NeXus/HDF5 I/O, lazy ROI streaming & crystallographic mapping (`braggtrack.io`)** — Auto-discovers 3D detector cubes across standard NeXus paths, ESRF-ID03 LIMA files (`/entry_0000/ESRF-ID03/pco_nf/data`), and arbitrary HDF5 trees (`auto_discover=True`). Streams `z`-slabs via `LazyVolume` (`otsu_threshold_chunked`, `read_roi`), calibrates `(mu, chi, d)` via `AxisCalibration`, maps transmission geometry `(2theta, eta, d, |Q|)` via `DetectorGeometry`, and exports directly to **`ImageD11` (`.flt`)** and **NeXus `NXprocess` HDF5 (`.nxs`)**.
-- **Stabilised 3D Bragg reflection segmentation (`braggtrack.segmentation`)** — Streaming Otsu foreground masking with cross-scan rolling-median smoothing (`smooth_thresholds`), 3D LoG peak enhancement, robust `h`-maxima seeding, 3D watershed, nearby-basin merging, and physical or voxel-space covariance/eigenvalue extraction. Includes an experimental dense patch-feature + HDBSCAN slice-stitching segmenter (`--method dino`).
-- **Multi-view foundation vision descriptors (`braggtrack.semantic`)** — Orthogonal $(\mu, \chi, d)$ maximum-intensity projections (MIPs) encoded with ungated **`facebook/dinov2-small`** by default (zero HuggingFace login required), drop-in support for **DINOv3** (`facebook/dinov3-vitb16-pretrain-lvd1689m`), or a deterministic zero-GPU `mock` backend for CI.
-- **4D grain kinematics, multi-scan gap closing, split/merge lineage & precursors (`braggtrack.tracking`)** — Vectorised geometry + semantic Hungarian association, Jaqaman-style multi-scan gap closing (`--max-gap`) across transient beam dropouts, per-grain lattice strain ($\Delta d / d_0$) and angular misorientation ($\Delta\mu$, $\Delta\chi$), intensity-partitioned `1 -> 2+` split and `2+ -> 1` merge DAG edges, and persistent multi-scan fracture precursor ranking combining 3D shape anisotropy, covariance spread growth, and spot ROI sub-peak / DINO patch-token dispersion.
-- **Publication figures & offline interactive HTML 4D Explorer (`braggtrack.viz`, `braggtrack-report`)** — Generates Okabe–Ito styled lineage DAGs, strain/misorientation dashboards, precursor heatmaps, 3-view MIP cards, and a single-file interactive `report.html` with embedded base64 MIP thumbnails that opens offline on air-gapped beamline networks.
-- **One-command reproducible pipeline (`braggtrack-run`)** — Runs validation, segmentation, semantic embedding, tracking, kinematics, fracture event analysis, HTML reporting, and `ImageD11`/NeXus export end-to-end, emitting SHA-256 input checksums, stage timings, and `run_manifest.json`.
+- **Beamline-scale NeXus/HDF5 I/O, `darfix`/BLISS auto-calibration & operando sync (`braggtrack.io`)** — Auto-discovers 3D detector cubes across `darfix` `NXdata` (`@default` / `@signal` / `@axes`), ESRF-ID03 LIMA files (`/entry_0000/ESRF-ID03/pco_nf/data`), ESRF BLISS `instrument/positioners`, and arbitrary HDF5 trees (`auto_discover=True`). Streams `z`-slabs via `LazyVolume`, synchronizes external potentiostat / load-frame logs (`CSV`/`TSV` and Biologic EC-Lab `.mpt`, regularized $\mathrm{d}Q/\mathrm{d}V$, $\partial\varepsilon/\partial V$), maps transmission geometry `(2theta, eta, d, |Q|)` via `DetectorGeometry`, and exports directly to **`ImageD11` (`.flt`)** and **NeXus `NXprocess` HDF5 (`.nxs`)**.
+- **Stabilised 3D Bragg reflection segmentation (`braggtrack.segmentation`)** — Streaming Otsu foreground masking with cross-scan rolling-median smoothing (`smooth_thresholds`), 3D LoG peak enhancement, robust `h`-maxima seeding, 3D watershed, nearby-basin merging, analytical Poisson + quantization centroid uncertainties (`centroid_*_err`), and physical or voxel-space covariance/eigenvalue extraction. Includes an experimental batched dense patch-feature + HDBSCAN slice-stitching segmenter (`--method dino`).
+- **Batched multi-view foundation vision descriptors (`braggtrack.semantic`)** — Orthogonal $(\mu, \chi, d)$ maximum-intensity projections (MIPs) encoded in batched forward passes (`embed_batch`, `extract_patch_features_batch`) with ungated **`facebook/dinov2-small`** by default (zero HuggingFace login required), drop-in support for **DINOv3** (`facebook/dinov3-vitb16-pretrain-lvd1689m`), or a deterministic zero-GPU `mock` backend for CI.
+- **4D grain kinematics, uncertainty propagation, split/merge lineage & precursors (`braggtrack.tracking`)** — Vectorised geometry + semantic Hungarian association with runner-up `assignment_margin`, Jaqaman-style multi-scan gap closing (`--max-gap`), local strain ($\Delta d / d_0$), ancestor-referenced `lineage_strain` across splits, propagated $\sigma_\varepsilon$, causal angular/lattice velocities (`rate_mu`, `rate_chi`, `rate_d`, `strain_rate`), intensity-partitioned `1 -> 2+` split and `2+ -> 1` merge DAG edges, and persistent multi-scan fracture precursor ranking.
+- **Online causal streaming & autonomous DFXM "Scout-and-Zoom" (`braggtrack.autonomous`, `braggtrack-watch`)** — Strictly causal trailing-window Otsu streaming tracker (`CausalStreamingTracker`) with $O(1)$-volume-RAM cached ROI precursors, velocity-extrapolated diffractometer setpoint prediction during rapid phase transitions (e.g., Ni92 `H2 -> H3` collapse), `bliss_dfxm_zoom.v1` JSONL trigger emission (`zoom_triggers.jsonl`), and offline causal replay benchmarking against naive baselines.
+- **Publication figures, operando $\mathrm{d}Q/\mathrm{d}V$ dashboards & offline HTML 4D Explorer (`braggtrack.viz`, `braggtrack-report`)** — Generates Okabe–Ito styled lineage DAGs, strain/misorientation dashboards, 3-panel operando electrochemistry + fracture synchronization plots, precursor heatmaps, 3-view MIP cards, and a single-file interactive `report.html` that opens offline on air-gapped beamline networks.
+- **One-command reproducible pipeline (`braggtrack-run`)** — Runs validation, operando stimulus sync, segmentation, semantic embedding, tracking, kinematics, fracture event analysis, HTML reporting, and `ImageD11`/NeXus export end-to-end, emitting SHA-256 input checksums, stage timings, and `run_manifest.json`.
 
 <p align="center">
-  <img src="docs/figures/benchmark_comparison.png" alt="BraggTrack v0.3.0 Quantitative 4D Diffraction Benchmark Suite" width="94%" />
+  <img src="docs/figures/benchmark_comparison.png" alt="BraggTrack Quantitative 4D Diffraction Benchmark Suite" width="94%" />
 </p>
 
 ---
@@ -67,7 +68,7 @@ Produces:
 - `artifacts/pipeline/results.nxs` & `artifacts/pipeline/peaks.flt`
 - `artifacts/pipeline/run_manifest.json` (SHA-256 input checksums, git SHA, config, stage timings)
 
-### Stage-by-stage CLI commands (9 Entry Points)
+### Stage-by-stage CLI commands (10 Entry Points)
 
 | CLI Entry Point | Module Equivalent | Purpose |
 |---|---|---|
@@ -75,11 +76,12 @@ Produces:
 | `braggtrack-validate` | `python -m braggtrack.cli.validate_dataset` | Validate sequence ordering, monotonic timestamps, and axis contracts |
 | `braggtrack-segment-synthetic` | `python -m braggtrack.cli.segment_synthetic` | Run fast synthetic 3D segmentation smoke test |
 | `braggtrack-segment-dataset` | `python -m braggtrack.cli.segment_dataset` | Segment 3D Bragg spots via chunked Otsu + smoothed thresholds & optional calibration |
-| `braggtrack-embed-dataset` | `python -m braggtrack.cli.embed_dataset` | Stream lazy 3D spot ROIs & compute orthogonal MIP embeddings (`auto`, `mock`, `torch`) |
+| `braggtrack-embed-dataset` | `python -m braggtrack.cli.embed_dataset` | Stream lazy 3D spot ROIs & compute batched MIP embeddings (`auto`, `mock`, `torch`) |
 | `braggtrack-track-dataset` | `python -m braggtrack.cli.track_dataset` | Build trajectory DAG (`--max-gap`), export `tracks.csv`, `kinematics.csv`, `.flt`, `.nxs` |
-| `braggtrack-events` | `python -m braggtrack.cli.detect_events` | Resolve `1 -> 2+` splits, `2+ -> 1` merges, and lazy-ROI fracture precursors |
-| `braggtrack-report` | `python -m braggtrack.cli.report_dataset` | Render publication PNG/PDF figures and self-contained interactive `report.html` |
-| `braggtrack-run` | `python -m braggtrack.cli.run_pipeline` | Execute the full pipeline with optional `--config config.json`, `--report`, and exports |
+| `braggtrack-events` | `python -m braggtrack.cli.detect_events` | Resolve `1 -> 2+` splits, `2+ -> 1` merges, and batched lazy-ROI fracture precursors |
+| `braggtrack-report` | `python -m braggtrack.cli.report_dataset` | Render publication PNG/PDF figures (`--operando-log`) and self-contained `report.html` |
+| `braggtrack-watch` | `python -m braggtrack.cli.watch_autonomous` | Live causal streaming watcher (`--mode watch`) & autonomous DFXM replay (`--mode replay`) |
+| `braggtrack-run` | `python -m braggtrack.cli.run_pipeline` | Execute the full pipeline with optional `--config`, `--operando-log`, `--report`, and exports |
 
 ---
 
@@ -162,9 +164,9 @@ python scripts/pre_pr_check.py
 
 ## Repository Layout & Contributing
 
-- **`braggtrack/`** — Installable Python library (`io`, `segmentation`, `semantic`, `tracking`, `viz`, `cli`).
+- **`braggtrack/`** — Installable Python library (`io`, `segmentation`, `semantic`, `tracking`, `autonomous`, `viz`, `cli`).
 - **`data/sample_operando/`** — Bundled ESRF-ID03 operando test scans (`scan0001`–`scan0003`).
-- **`docs/`** — [Architecture](docs/architecture.md), [Benchmarks](docs/benchmarks.md), [Coding Practices](docs/coding-practices.md), and publication figures (`docs/figures/`).
+- **`docs/`** — [Ecosystem Positioning & Autonomous DFXM Guide](docs/positioning.md), [Architecture](docs/architecture.md), [Benchmarks](docs/benchmarks.md), [Coding Practices](docs/coding-practices.md), and publication figures (`docs/figures/`).
 - **`scripts/`** — 9 acceptance gates, 5-scenario benchmark suite (`benchmark_suite.py`), semantic α/β ablation (`ablation_semantic.py`), and CI runner (`ci_report.py`).
 - **`artifacts/`** — Generated pipeline outputs (gitignored; never commit).
 

@@ -96,10 +96,13 @@ def open_lazy_volume(
     candidates: list[str] | None = None,
     *,
     auto_discover: bool = True,
+    swmr: bool = False,
 ) -> LazyVolume:
     """Open an HDF5 file and return a :class:`LazyVolume` bound to its primary 3D dataset."""
+    from .nexus import _open_h5_readonly
+
     h5py = _require_h5py()
-    handle = h5py.File(path, "r")
+    handle = _open_h5_readonly(h5py, path, swmr=swmr)
     try:
         ds_path = _resolve_volume_dataset(handle, h5py, candidates=candidates, auto_discover=auto_discover)
         ds = handle[ds_path]
