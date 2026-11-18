@@ -36,6 +36,17 @@ def _require_h5py() -> Any:
         raise MissingH5DependencyError("h5py is required for HDF5/NeXus parsing. Install dependencies first.") from exc
 
 
+def _open_h5_readonly(h5py: Any, path: str | Path, *, swmr: bool = False) -> Any:
+    """Open an HDF5 file read-only, enabling SWMR when supported by the file superblock."""
+    if not swmr:
+        return h5py.File(path, "r")
+    try:
+        return h5py.File(path, "r", swmr=True)
+    except ValueError:
+        # Older HDF5 v0/v2 superblocks reject swmr=True with ValueError; fall back cleanly while keeping OSError intact.
+        return h5py.File(path, "r")
+
+
 def summarize_hdf5_tree(path: str | Path) -> list[tuple[str, str, tuple[int, ...] | None, str | None]]:
     """Return a flat summary of groups/datasets in an HDF5 file.
 
@@ -120,7 +131,7 @@ def _read_first(handle: Any, candidates: list[str], h5py: Any | None = None) -> 
     return None
 
 
-def extract_scan_metadata(path: str | Path) -> dict[str, Any]:
+def extract_scan_metadata(path: str | Path, *, swmr: bool = False) -> dict[str, Any]:
     """Extract common beamline metadata from a NeXus/HDF5 scan file.
 
     Probes standard NeXus ``/entry*`` groups (including ``/entry_0000`` used by
@@ -130,7 +141,7 @@ def extract_scan_metadata(path: str | Path) -> dict[str, Any]:
     h5py = _require_h5py()
     path = Path(path)
 
-    with h5py.File(path, "r") as handle:
+    with _open_h5_readonly(h5py, path, swmr=swmr) as handle:
         entries = _candidate_entries(handle, h5py) or ["/entry", "/entry1", "/entry_0000"]
         start_candidates = [f"{e}/start_time" for e in entries]
         end_candidates = [f"{e}/end_time" for e in entries]
@@ -159,7 +170,7 @@ _MOTOR_AXIS_SYNONYMS: dict[str, tuple[str, ...]] = {
 }
 
 
-def extract_axis_calibration(path: str | Path) -> AxisCalibration:
+def extract_axis_calibration(path: str | Path, *, swmr: bool = False) -> AxisCalibration:
     """Extract linear ``(mu, chi, d)`` calibration from a NeXus/HDF5 file if present.
 
     Probes:
@@ -173,7 +184,7 @@ def extract_axis_calibration(path: str | Path) -> AxisCalibration:
     h5py = _require_h5py()
     path = Path(path)
 
-    with h5py.File(path, "r") as handle:
+    with _open_h5_readonly(h5py, path, swmr=swmr) as handle:
         vol_parent: str | None = None
         try:
             ds_path = _resolve_volume_dataset(handle, h5py, auto_discover=True)
@@ -302,10 +313,11 @@ def discover_primary_volume_path(
     candidates: list[str] | None = None,
     *,
     auto_discover: bool = True,
+    swmr: bool = False,
 ) -> str:
     """Return the HDF5 dataset path of the primary 3D detector volume."""
     h5py = _require_h5py()
-    with h5py.File(path, "r") as handle:
+    with _open_h5_readonly(h5py, path, swmr=swmr) as handle:
         return _resolve_volume_dataset(handle, h5py, candidates=candidates, auto_discover=auto_discover)
 
 
@@ -314,11 +326,12 @@ def load_primary_volume(
     candidates: list[str] | None = None,
     *,
     auto_discover: bool = True,
+    swmr: bool = False,
 ) -> np.ndarray:
     """Load a primary 3D detector volume from NeXus paths or largest-3D auto-discovery."""
     import numpy as np
 
     h5py = _require_h5py()
-    with h5py.File(path, "r") as handle:
+    with _open_h5_readonly(h5py, path, swmr=swmr) as handle:
         ds_path = _resolve_volume_dataset(handle, h5py, candidates=candidates, auto_discover=auto_discover)
         return np.asarray(handle[ds_path][()], dtype=np.float64)

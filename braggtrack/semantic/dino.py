@@ -75,13 +75,24 @@ def _mock_embedding_from_mips(
     return v
 
 
-def _mips_to_rgb_uint8(mip: np.ndarray) -> np.ndarray:
+def _mips_to_rgb_uint8(mip: np.ndarray, *, preserve_aspect: bool = True) -> np.ndarray:
     m = np.asarray(mip, dtype=np.float64)
+    if m.size == 0:
+        return np.zeros((1, 1, 3), dtype=np.uint8)
     lo, hi = float(np.percentile(m, 1.0)), float(np.percentile(m, 99.0))
     if hi <= lo:
         hi = lo + 1.0
     u = np.clip((m - lo) / (hi - lo), 0.0, 1.0)
     g = (u * 255.0).astype(np.uint8)
+    if preserve_aspect and g.ndim == 2 and g.shape[0] != g.shape[1]:
+        h, w = g.shape
+        # Pad onto a centered square canvas (with 8% margin for DINOv2's 256->224 center-crop)
+        side = max(h, w, int(np.ceil(max(h, w) / 0.875)))
+        canvas = np.zeros((side, side), dtype=np.uint8)
+        y0 = (side - h) // 2
+        x0 = (side - w) // 2
+        canvas[y0 : y0 + h, x0 : x0 + w] = g
+        g = canvas
     return np.stack([g, g, g], axis=-1)
 
 
@@ -282,7 +293,7 @@ class TorchDinoPatchEncoder:
     ) -> list[np.ndarray]:
         if not images_2d:
             return []
-        rgbs = [_mips_to_rgb_uint8(img) for img in images_2d]
+        rgbs = [_mips_to_rgb_uint8(img, preserve_aspect=False) for img in images_2d]
         step = max(1, int(batch_size))
         if str(self._device) == "cpu":
             step = min(step, 16)

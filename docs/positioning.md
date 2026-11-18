@@ -104,15 +104,54 @@ braggtrack-watch path/to/ni92_scans \
   --backend torch
 ```
 
-**2. Live Beamline Directory Watcher (During Operando Beamtime):**
-Watch an active experiment directory as BLISS writes `scan0001/`, `scan0002/`, ..., waiting for HDF5 write completion before causally stepping the tracker and emitting `zoom_triggers.jsonl`:
+**2. FAL Shadow Mode & Certified Active Beamline Watch (`--mode shadow` $\to$ `--mode active`):**
+During live beamtime, validate setpoints and Sim-to-Real Gap ($\Delta_{\text{gap}}$) calibration non-invasively in `--mode shadow` (`"actuate": false`) before switching to `--mode active` inside an explicit Operational Design Domain:
 
 ```bash
 braggtrack-watch /data/visitor/maXXXX/id03/sample_ni92 \
-  --mode watch \
-  --outdir artifacts/live_autonomous \
-  --max-triggers-per-scan 1 \
-  --cooldown-scans 3 \
-  --lead-scans 1.0 \
-  --max-scans 200
+  --mode shadow \
+  --hypothesis mechanical_fracture \
+  --operando-log /data/visitor/maXXXX/id03/ni92_echem.mpt \
+  --mu-bounds -2.5 2.5 \
+  --chi-bounds -3.0 3.0 \
+  --voltage-bounds 2.8 4.35 \
+  --max-zooms-per-lineage 2 \
+  --scan-cadence-sec 30.0 \
+  --outdir artifacts/live_shadow
 ```
+
+---
+
+## 4. Facility Autonomy Levels (FAL) Classification & Operational Design Domain
+
+Following the **Facility Autonomy Levels (FAL)** taxonomy for self-driving synchrotron and neutron beamlines (*Le Houx, 2026*) and the **Heuristic Operando** framework (*Lu et al., 2025*, `arXiv:2601.00851`), `BraggTrack v0.4.0` is engineered specifically to operate at **FAL Level 3 (Conditional Heuristic Autonomy)** within a bounded **Operational Design Domain ($\mathcal{O}_{\text{ODD}}$)**, maximizing Entropy-Scaled Measurement Efficiency ($E_{\text{SME}}$) without crossing premature uncertified liability boundaries:
+
+| FAL Level | Agency Regime | Synchrotron Diffraction / DFXM Example | `BraggTrack` Role |
+| :--- | :--- | :--- | :--- |
+| **L0 — Manual** | Human selects every $(x, y, \mu, \chi, 2\theta)$ scan | Manual single-grain alignment in `BLISS` | Offline inspection (`braggtrack-inspect`) |
+| **L1 — Scripted** | Pre-programmed uniform grid / time-loop | Fixed-cadence wide-field scouting loop | Batch post-processing (`braggtrack-run`) |
+| **L2 — Reactive Feedback** | Signal-space feedback (no physical prior or hypothesis dependence) | Centering brightest peak or threshold intensity trigger | Baseline comparators (`brightest_intensity`) + latency fallback (`L2_fallback`) |
+| **$\uparrow$ *Inference Barrier*** | *Requires physical sample state + external reference prior + hypothesis-conditioned policy* | | |
+| **L3 — Conditional Heuristic** | Hypothesis-driven multi-scale steering inside human-defined $\mathcal{O}_{\text{ODD}}$ | **Autonomous wide-field $\to$ high-res DFXM Scout-and-Zoom** | **`braggtrack.autonomous` (`CausalStreamingTracker`, `OperationalDesignDomain`)** |
+| **$\uparrow$ *Liability Threshold*** | *Requires prior certification of agent for unsupervised multi-hazard hardware control* | | |
+| **L4 — Certified Domain Autonomy** | Self-certified multi-modality orchestration across full beamtime block | Autonomous potentiostat + diffractometer co-steering | Future Ewoks/BLISS certified safety interlock integration |
+
+### How `BraggTrack` Satisfies the Three FAL Level 3 Conditions
+
+1. **Condition (i) — Decisions Act on Inferred Physical Sample State:**
+   - Rather than triggering on raw detector ADUs, `BraggTrack` subtracts local detector background pedestals, transforms centroids and covariances into calibrated reciprocal-space $(\mu, \chi, d)$ coordinates, disambiguates crystallographic orientation cleavage (`mechanical_split`) from first-order two-phase jumps (`phase_split`, e.g., Ni92 `H2 -> H3`), and computes scale-invariant **standardized Pearson excess kurtosis** along each rocking axis (*Le Houx et al., 2026*):
+     $$g_{2,k} = \frac{\mu_{4,k}}{\mu_{2,k}^2} - 3, \quad k \in \{\mu, \chi, d\}$$
+     capturing localized surface-flaw dislocation pileups ($g_2 > 0$) and incipient sub-grain splitting ($g_2 < 0$) before macroscopic fracture.
+2. **Condition (ii) — Interpretation Against External / Calibrated Reference Priors:**
+   - Combines an external pretrained vision-transformer prior (`facebook/dinov2-small` multi-view global and foreground patch-token dispersion) with `BulkReferencePrior`, which robustly estimates $(\mu_{\text{bulk}}, \sigma_{\text{bulk}})$ via median and MAD across the initial undeformed grain ensemble to set dynamic kurtosis anomaly thresholds $K_{\text{thresh}} = \mu_{\text{bulk}} + 3\sigma_{\text{bulk}}$.
+3. **Condition (iii) — Explicit Dependence on Declared Scientific Hypothesis ($H$):**
+   - Setting `--hypothesis {mechanical_fracture, phase_nucleation, intragranular_disorder}` redirects the beamline to physically distinct grain populations on the exact same operando stream (persistent bimodal sub-peak cleavage vs. high-$|\dot{\varepsilon}|$ redox phase fronts vs. heavy-tailed $g_2 \ge K_{\text{thresh}}$ intragranular defect nucleation).
+
+### Operational Design Domain ($\mathcal{O}_{\text{ODD}}$), Staged Certification & Sim-to-Real Gap ($\Delta_{\text{gap}}$)
+
+- **Latency Criterion & $O(1)$ Sliding-Window Streaming:** `CausalStreamingTracker` freezes historical track anchors outside a bounded `sliding_window_scans` horizon so per-scan runtime $\tau_{\text{loop}}$ stays $O(1)$ across `1,000+` scans and is continuously verified against $\tau_{\text{loop}} \le t_{\text{decision}} / \kappa$ (`OperationalDesignDomain.evaluate_latency_budget`).
+- **Discovery Potential & Beam-Dump Suppression:** Candidate heuristic scores $H(x)$ are weighted by upstream synchrotron flux health $\mathcal{W}(\mathbf{s}_t) \in [0, 1]$, $D(x) = H(x)\cdot\mathcal{W}(\mathbf{s}_t)$, halting actuation (`L1_halt`) during beam dumps, shutter closures, or electrochemical voltage/temperature ODD excursions, while enforcing motor soft-limits and per-lineage X-ray dose caps (`--max-zooms-per-lineage`).
+- **Closed-Form Sim-to-Real Audit (`audit_trajectory.jsonl`):** Every zoom prediction $\mathcal{N}(\hat{\boldsymbol{\mu}}_{t+1}, \mathrm{diag}(\boldsymbol{\sigma}_{\text{pred}}^2))$ is automatically audited when scan $t + 1$ arrives using the unit-invariant differential-entropy-normalized Gaussian surprise:
+  $$\Delta_{\text{gap}} = -\ln P_{\text{sim}}(\mathbf{s}'_{\text{obs}} \mid \mathbf{s}_t, \mathbf{a}_t) - H\!\left[P_{\text{sim}}(\cdot \mid \mathbf{s}_t, \mathbf{a}_t)\right] = \frac{1}{2}\sum_{k \in \{\mu, \chi, d\}} \frac{(s'_{\text{obs},k} - \hat{\mu}_k)^2}{\sigma_{\text{pred},k}^2} - \frac{3}{2}$$
+  Under nominal calibration, $\mathbb{E}[\Delta_{\text{gap}}] = 0$ and $2\Delta_{\text{gap}} + 3 \sim \chi^2_3$ ($\epsilon_{\text{valid},0.99} \approx 4.172$), providing quantitative sign-off from `--mode replay` $\to$ `--mode shadow` $\to$ `--mode active`.
+

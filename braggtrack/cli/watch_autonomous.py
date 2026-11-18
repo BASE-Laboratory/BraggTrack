@@ -1,4 +1,4 @@
-"""Autonomous DFXM "Scout-and-Zoom" beamline watcher and causal replay CLI."""
+"""Autonomous DFXM "Scout-and-Zoom" beamline watcher, FAL Staged Certification, and causal replay CLI."""
 
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ from pathlib import Path
 
 from braggtrack.autonomous import (
     CausalStreamingTracker,
+    OperationalDesignDomain,
     ZoomTriggerPolicy,
     evaluate_causal_replay,
 )
@@ -20,6 +21,7 @@ from braggtrack.io import (
     resolve_dataset_root,
     synchronize_to_scans,
 )
+from braggtrack.io.nexus import _open_h5_readonly, _require_h5py, _resolve_volume_dataset
 from braggtrack.semantic import DEFAULT_DINO_MODEL
 from braggtrack.tracking.precursors import PrecursorConfig
 
@@ -34,9 +36,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--mode",
-        choices=("replay", "watch"),
+        choices=("replay", "shadow", "watch", "active"),
         default="replay",
-        help="'replay' benchmarks causal closed-loop triggers on an existing sequence; 'watch' polls for new scans",
+        help="FAL certification stage: 'replay' (offline), 'shadow'/'watch' (live non-actuating), or 'active' (closed-loop)",
+    )
+    parser.add_argument(
+        "--hypothesis",
+        choices=("mechanical_fracture", "phase_nucleation", "intragranular_disorder"),
+        default="mechanical_fracture",
+        help="FAL Level 3 experimental hypothesis governing heuristic target prioritization",
     )
     parser.add_argument("--outdir", default="artifacts/autonomous", help="Output directory for zoom triggers & logs")
     parser.add_argument(
@@ -60,12 +68,68 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--lead-scans", type=float, default=1.0, help="Velocity extrapolation lead (in scan steps)")
     parser.add_argument("--window-sigma", type=float, default=3.5, help="Scan half-width sigma multiplier")
     parser.add_argument(
+        "--mu-bounds",
+        nargs=2,
+        type=float,
+        default=None,
+        metavar=("MIN", "MAX"),
+        help="Optional ODD motor soft-limits for rocking angle mu",
+    )
+    parser.add_argument(
+        "--chi-bounds",
+        nargs=2,
+        type=float,
+        default=None,
+        metavar=("MIN", "MAX"),
+        help="Optional ODD motor soft-limits for roll angle chi",
+    )
+    parser.add_argument(
+        "--d-bounds",
+        nargs=2,
+        type=float,
+        default=None,
+        metavar=("MIN", "MAX"),
+        help="Optional ODD motor soft-limits for d / 2theta / obpitch",
+    )
+    parser.add_argument(
+        "--voltage-bounds",
+        nargs=2,
+        type=float,
+        default=None,
+        metavar=("V_MIN", "V_MAX"),
+        help="Optional ODD electrochemical voltage window (V); halts actuation on excursion",
+    )
+    parser.add_argument(
+        "--max-zooms-per-lineage",
+        type=int,
+        default=None,
+        help="Optional ODD per-grain maximum high-res zoom count to cap X-ray dose",
+    )
+    parser.add_argument(
+        "--scan-cadence-sec",
+        type=float,
+        default=None,
+        help="Expected beamline scan cadence t_decision (s) for FAL latency budget verification",
+    )
+    parser.add_argument(
+        "--sliding-window",
+        type=int,
+        default=24,
+        help="Bounded causal tracking window size in scans (default: 24 for O(1) latency)",
+    )
+    parser.add_argument(
         "--zoom-budget",
         type=int,
         default=None,
         help="Optional cap on total zoom acquisitions during --mode replay baseline comparison",
     )
-    parser.add_argument("--poll-interval", type=float, default=0.5, help="Directory poll interval (s) in --mode watch")
+    parser.add_argument("--poll-interval", type=float, default=0.5, help="Directory poll interval (s) in live modes")
+    parser.add_argument(
+        "--settle-sec",
+        type=float,
+        default=0.03,
+        help="File size/mtime quiescence window (s) before reading newly created HDF5 scans",
+    )
     parser.add_argument(
         "--max-scans",
         type=int,
@@ -76,7 +140,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--max-idle-polls",
         type=int,
         default=20,
-        help="Stop --mode watch after this many consecutive polls with no new scans (0 = run indefinitely)",
+        help="Stop live watcher after this many consecutive polls with no ready scans (0 = run indefinitely)",
     )
     return parser
 
@@ -86,6 +150,30 @@ def _load_optional_calibration(path_str: str | None) -> AxisCalibration | None:
         return None
     raw = json.loads(Path(path_str).read_text(encoding="utf-8"))
     return AxisCalibration.from_dict(raw)
+
+
+def _is_hdf5_quiescent_and_readable(path: Path, *, settle_sec: float = 0.03) -> bool:
+    """Verify file size/mtime stability and SWMR HDF5 dataset readability before ingestion."""
+    try:
+        st0 = path.stat()
+        if st0.st_size <= 0:
+            return False
+        if settle_sec > 0.0:
+            time.sleep(settle_sec)
+            st1 = path.stat()
+            if st1.st_size != st0.st_size or st1.st_mtime_ns != st0.st_mtime_ns:
+                return False
+        h5py = _require_h5py()
+        with _open_h5_readonly(h5py, path, swmr=True) as handle:
+            ds_path = _resolve_volume_dataset(handle, h5py, auto_discover=True)
+            ds = handle[ds_path]
+            if ds.ndim != 3 or any(int(dim) <= 0 for dim in ds.shape):
+                return False
+            # Probe trailing frame voxel to catch incomplete LIMA chunk flushes
+            _ = ds[-1, 0:1, 0:1]
+        return True
+    except (OSError, KeyError, ValueError, RuntimeError):
+        return False
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -100,6 +188,16 @@ def main(argv: list[str] | None = None) -> int:
         score_threshold=float(args.min_precursor_score),
         min_persistence=int(args.min_persistence),
     )
+    odd = OperationalDesignDomain(
+        mu_bounds=(float(args.mu_bounds[0]), float(args.mu_bounds[1])) if args.mu_bounds else None,
+        chi_bounds=(float(args.chi_bounds[0]), float(args.chi_bounds[1])) if args.chi_bounds else None,
+        d_bounds=(float(args.d_bounds[0]), float(args.d_bounds[1])) if args.d_bounds else None,
+        voltage_bounds_v=(float(args.voltage_bounds[0]), float(args.voltage_bounds[1]))
+        if args.voltage_bounds
+        else None,
+        max_zooms_per_lineage=args.max_zooms_per_lineage,
+        scan_cadence_sec=args.scan_cadence_sec,
+    )
     policy = ZoomTriggerPolicy(
         min_precursor_score=float(args.min_precursor_score),
         min_persistence=int(args.min_persistence),
@@ -107,9 +205,13 @@ def main(argv: list[str] | None = None) -> int:
         max_triggers_per_scan=int(args.max_triggers_per_scan),
         lead_scans=float(args.lead_scans),
         window_sigma=float(args.window_sigma),
+        hypothesis=args.hypothesis,
+        execution_mode=args.mode,
+        odd=odd,
     )
 
     triggers_jsonl = outdir / "zoom_triggers.jsonl"
+    audit_jsonl = outdir / "audit_trajectory.jsonl"
     steps_json = outdir / "autonomous_steps.json"
 
     if args.mode == "replay":
@@ -143,14 +245,21 @@ def main(argv: list[str] | None = None) -> int:
             for tgt in bench.zoom_targets:
                 fh.write(json.dumps(tgt.to_bliss_command()) + "\n")
 
+        with audit_jsonl.open("w", encoding="utf-8") as fh:
+            for rec in bench.audit_records:
+                fh.write(json.dumps(rec.to_dict()) + "\n")
+
         steps_json.write_text(json.dumps([s.to_dict() for s in bench.steps], indent=2), encoding="utf-8")
         summary_path = outdir / "replay_summary.json"
         summary_path.write_text(json.dumps(bench.to_dict(), indent=2), encoding="utf-8")
 
         bt_m = bench.policy_comparison["braggtrack_autonomous"]
+        gap_msg = (
+            f", mean Delta_gap={bench.mean_sim_to_real_gap:+.3f}" if bench.mean_sim_to_real_gap is not None else ""
+        )
         print(
             f"[braggtrack-watch:replay] Processed {bench.n_scans} scans "
-            f"(mean {bench.mean_step_latency_sec:.3f}s/scan) -> {len(bench.zoom_targets)} zoom trigger(s)"
+            f"(mean {bench.mean_step_latency_sec:.3f}s/scan) -> {len(bench.zoom_targets)} zoom trigger(s){gap_msg}"
         )
         print(
             f"  Fracture capture recall={bt_m.fracture_capture_recall:.2f}, "
@@ -160,7 +269,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 0
 
-    # Live directory polling mode ("watch")
+    # Live directory polling modes: "shadow", "watch" (non-actuating), or "active" (FAL Level 3 actuation)
     tracker = CausalStreamingTracker(
         backend=args.backend,
         model_name=args.model,
@@ -168,45 +277,70 @@ def main(argv: list[str] | None = None) -> int:
         detector=detector,
         precursor_config=prec_cfg,
         trigger_policy=policy,
+        sliding_window_scans=int(args.sliding_window) if args.sliding_window and args.sliding_window > 0 else None,
+        swmr=True,
     )
     seen_files: set[Path] = set()
     step_dicts: list[dict] = []
     idle_polls = 0
 
     triggers_jsonl.write_text("", encoding="utf-8")
+    audit_jsonl.write_text("", encoding="utf-8")
     while True:
-        seq = BeamlineAdapter(root).build_sequence()
-        stim_by_name = {}
-        if args.operando_log and seq.scans:
-            op_log = load_operando_log(args.operando_log)
-            for sp in synchronize_to_scans(op_log, seq):
-                stim_by_name[sp.scan_name] = sp
+        try:
+            seq = BeamlineAdapter(root).build_sequence()
+        except OSError:
+            seq = None
 
-        new_scans = [sc for sc in seq.scans if sc.file_path.resolve() not in seen_files]
-        if new_scans:
-            idle_polls = 0
-            for sc in new_scans:
-                seen_files.add(sc.file_path.resolve())
-                ts_iso = sc.start_time.isoformat() if sc.start_time is not None else None
+        stim_by_name = {}
+        if seq is not None and args.operando_log and seq.scans:
+            try:
+                op_log = load_operando_log(args.operando_log)
+                for sp in synchronize_to_scans(op_log, seq):
+                    stim_by_name[sp.scan_name] = sp
+            except (OSError, ValueError):
+                pass
+
+        candidates = [sc for sc in (seq.scans if seq is not None else []) if sc.file_path.resolve() not in seen_files]
+        ingested_any = False
+        for sc in candidates:
+            if not _is_hdf5_quiescent_and_readable(sc.file_path, settle_sec=max(0.0, float(args.settle_sec))):
+                continue
+            ts_iso = sc.start_time.isoformat() if sc.start_time is not None else None
+            try:
                 res = tracker.step(
                     sc.file_path,
                     scan_name=sc.scan_name,
                     timestamp=ts_iso,
                     stimulus=stim_by_name.get(sc.scan_name),
                 )
-                step_dicts.append(res.to_dict())
-                if res.zoom_targets:
-                    with triggers_jsonl.open("a", encoding="utf-8") as fh:
-                        for tgt in res.zoom_targets:
-                            fh.write(json.dumps(tgt.to_bliss_command()) + "\n")
-                        fh.flush()
-                steps_json.write_text(json.dumps(step_dicts, indent=2), encoding="utf-8")
-                print(
-                    f"[braggtrack-watch:live] scan={res.scan_name} spots={res.n_spots} "
-                    f"zoom_triggers={len(res.zoom_targets)} ({res.step_latency_sec:.3f}s)"
-                )
-                if args.max_scans is not None and tracker.n_scans_processed >= int(args.max_scans):
-                    return 0
+            except (OSError, KeyError, ValueError):
+                # Transient partial HDF5 write or lock — retry cleanly on next poll without losing the scan
+                continue
+
+            seen_files.add(sc.file_path.resolve())
+            ingested_any = True
+            step_dicts.append(res.to_dict())
+            if res.zoom_targets:
+                with triggers_jsonl.open("a", encoding="utf-8") as fh:
+                    for tgt in res.zoom_targets:
+                        fh.write(json.dumps(tgt.to_bliss_command()) + "\n")
+                    fh.flush()
+            if res.audit_records:
+                with audit_jsonl.open("a", encoding="utf-8") as fh:
+                    for rec in res.audit_records:
+                        fh.write(json.dumps(rec.to_dict()) + "\n")
+                    fh.flush()
+            steps_json.write_text(json.dumps(step_dicts, indent=2), encoding="utf-8")
+            print(
+                f"[braggtrack-watch:{args.mode}] scan={res.scan_name} spots={res.n_spots} "
+                f"fal={res.fal_level_active} zoom_triggers={len(res.zoom_targets)} ({res.step_latency_sec:.3f}s)"
+            )
+            if args.max_scans is not None and tracker.n_scans_processed >= int(args.max_scans):
+                return 0
+
+        if ingested_any:
+            idle_polls = 0
         else:
             idle_polls += 1
             if args.max_idle_polls > 0 and idle_polls >= int(args.max_idle_polls):

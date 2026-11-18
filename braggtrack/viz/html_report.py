@@ -219,6 +219,7 @@ def build_explorer_payload(
         events_list.append(
             {
                 "event_type": etype,
+                "split_subtype": str(r.get("split_subtype", "")),
                 "parent_scan": int(float(r.get("scan_idx_from", r.get("parent_scan", 0)))),
                 "child_scan": int(float(r.get("scan_idx_to", r.get("child_scan", 1)))),
                 "parent_track_ids": ptids,
@@ -395,6 +396,7 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data:; style-src 'unsafe-inline'; script-src 'unsafe-inline';" />
 <title>__TITLE__</title>
 <style>
   :root {
@@ -479,6 +481,7 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
 <script id="bt-data" type="application/json">__PAYLOAD_JSON__</script>
 <script>
 (() => {
+  const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   const DATA = JSON.parse(document.getElementById('bt-data').textContent);
   document.getElementById('page-title').textContent = DATA.title;
   const dur = DATA.total_duration_sec != null ? ` | Runtime: ${DATA.total_duration_sec}s` : '';
@@ -498,7 +501,7 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
     ['Precursor Candidates', DATA.kpis.precursor_count, 'var(--prec)'],
   ];
   document.getElementById('kpi-strip').innerHTML = kpis.map(([l, v, c]) =>
-    `<div class="kpi"><div class="lbl">${l}</div><div class="val" style="color:${c}">${v}</div></div>`
+    `<div class="kpi"><div class="lbl">${esc(l)}</div><div class="val" style="color:${esc(c)}">${esc(v)}</div></div>`
   ).join('');
 
   const filters = [
@@ -529,7 +532,7 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
   function renderPills() {
     const el = document.getElementById('filter-pills');
     el.innerHTML = filters.map(([id, label]) =>
-      `<button class="btn ${activeFilter === id ? 'active' : ''}" data-f="${id}">${label}</button>`
+      `<button class="btn ${activeFilter === id ? 'active' : ''}" data-f="${esc(id)}">${esc(label)}</button>`
     ).join('');
     el.querySelectorAll('button').forEach(b => b.addEventListener('click', () => {
       activeFilter = b.dataset.f;
@@ -558,8 +561,9 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
       const x = xOf(s);
       const st = stimMap.get(s);
       const vTag = (st && st.voltage_v != null) ? ` (${Number(st.voltage_v).toFixed(2)}V)` : '';
+      const scanLabel = esc((DATA.scan_names[s] || ('S' + s)) + vTag);
       svg += `<line x1="${x}" y1="${padT - 10}" x2="${x}" y2="${height - 16}" stroke="var(--border)" stroke-dasharray="3,3" stroke-width="1"/>`;
-      svg += `<text x="${x}" y="15" text-anchor="middle">${(DATA.scan_names[s] || ('S' + s)) + vTag}</text>`;
+      svg += `<text x="${x}" y="15" text-anchor="middle">${scanLabel}</text>`;
     }
 
     // Event edges
@@ -576,7 +580,7 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
     tracks.forEach(t => {
       const y = lane.get(t.track_id);
       const isSel = t.track_id === selectedTid;
-      svg += `<text x="8" y="${y + 4}" style="font-weight:${isSel ? '700' : '400'};fill:${isSel ? 'var(--primary)' : 'var(--muted)'}">T${t.track_id}</text>`;
+      svg += `<text x="8" y="${y + 4}" style="font-weight:${isSel ? '700' : '400'};fill:${isSel ? 'var(--primary)' : 'var(--muted)'}">T${Number(t.track_id)}</text>`;
       const obs = t.observations;
       for (let i = 0; i < obs.length - 1; i++) {
         const s0 = obs[i].scan_idx, s1 = obs[i + 1].scan_idx;
@@ -593,8 +597,9 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
         const linS = o.lineage_strain_pct != null ? o.lineage_strain_pct : o.strain_pct;
         const errS = o.strain_err_pct ? `±${o.strain_err_pct}` : '';
         const vInfo = o.voltage_v != null ? ` | V=${Number(o.voltage_v).toFixed(3)}V` : '';
-        svg += `<circle class="node-dot" data-tid="${t.track_id}" cx="${xOf(o.scan_idx)}" cy="${y}" r="${r}" fill="${fill}" stroke="#0f172a" stroke-width="1">
-          <title>T${t.track_id} @ scan ${o.scan_idx}${vInfo} | root_strain=${linS}${errS}% | I=${o.intensity} | prec=${o.precursor_score}</title>
+        const tip = esc(`T${t.track_id} @ scan ${o.scan_idx}${vInfo} | root_strain=${linS}${errS}% | I=${o.intensity} | prec=${o.precursor_score}`);
+        svg += `<circle class="node-dot" data-tid="${Number(t.track_id)}" cx="${xOf(o.scan_idx)}" cy="${y}" r="${r}" fill="${fill}" stroke="#0f172a" stroke-width="1">
+          <title>${tip}</title>
         </circle>`;
       });
     });
@@ -617,13 +622,13 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
     const xMap = x => pL + ((x - minX) / (maxX - minX)) * (w - pL - pR);
     const yMap = y => h - pB - ((y - minY) / (maxY - minY)) * (h - pT - pB);
     const poly = points.map(([x, y]) => `${xMap(x).toFixed(1)},${yMap(y).toFixed(1)}`).join(' ');
-    const dots = points.map(([x, y]) => `<circle cx="${xMap(x).toFixed(1)}" cy="${yMap(y).toFixed(1)}" r="3.3" fill="${color}"/>`).join('');
+    const dots = points.map(([x, y]) => `<circle cx="${xMap(x).toFixed(1)}" cy="${yMap(y).toFixed(1)}" r="3.3" fill="${esc(color)}"/>`).join('');
     return `<div style="margin-bottom:8px">
-      <div class="meta" style="margin-bottom:2px">${yLabel} (min ${minY.toFixed(3)}, max ${maxY.toFixed(3)})</div>
+      <div class="meta" style="margin-bottom:2px">${esc(yLabel)} (min ${minY.toFixed(3)}, max ${maxY.toFixed(3)})</div>
       <svg width="100%" viewBox="0 0 ${w} ${h}" style="border:1px solid var(--border);border-radius:6px">
         <text x="4" y="${pT + 6}">${maxY.toFixed(2)}</text>
         <text x="4" y="${h - pB}">${minY.toFixed(2)}</text>
-        <polyline fill="none" stroke="${color}" stroke-width="2" points="${poly}"/>
+        <polyline fill="none" stroke="${esc(color)}" stroke-width="2" points="${poly}"/>
         ${dots}
       </svg>
     </div>`;
@@ -660,11 +665,11 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
       sparkSvg(intPts, 'var(--merge)', 'Integrated Intensity') +
       sparkSvg(precPts, 'var(--prec)', 'Fracture Precursor Score [0, 1]');
 
-    const mips = t.observations.filter(o => o.mip_b64);
+    const mips = t.observations.filter(o => o.mip_b64 && String(o.mip_b64).startsWith('data:image/png;base64,'));
     if (mips.length) {
       mipsEl.innerHTML = `<div class="meta" style="margin-bottom:3px">3-View Orthogonal MIPs (d-chi | mu-d | mu-chi)</div>
         <div class="mips-row">` + mips.map(o =>
-        `<div class="mip-item"><img src="${o.mip_b64}" alt="MIP S${o.scan_idx}"/><span>Scan ${o.scan_idx} (subpeaks: ${o.subpeaks})</span></div>`
+        `<div class="mip-item"><img src="${esc(o.mip_b64)}" alt="MIP S${Number(o.scan_idx)}"/><span>Scan ${Number(o.scan_idx)} (subpeaks: ${Number(o.subpeaks)})</span></div>`
       ).join('') + '</div>';
     } else {
       mipsEl.innerHTML = '';
@@ -676,16 +681,17 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
     if (!DATA.events.length) {
       evEl.innerHTML = '<div class="meta">No split or merge events detected.</div>';
     } else {
-      evEl.innerHTML = `<table><thead><tr><th>Type</th><th>Scans</th><th>Parents -> Children</th><th>I_child / I_parent</th><th>Conf</th></tr></thead><tbody>` +
+      evEl.innerHTML = `<table><thead><tr><th>Type</th><th>Scans</th><th>Parents -&gt; Children</th><th>I_child / I_parent</th><th>Conf</th></tr></thead><tbody>` +
         DATA.events.map(e => {
           const cls = e.event_type === 'split' ? 'b-split' : 'b-merge';
-          const focusTid = e.parent_track_ids[0] || e.child_track_ids[0];
+          const focusTid = Number(e.parent_track_ids[0] || e.child_track_ids[0] || 0);
+          const sub = e.split_subtype ? ` <span class="meta">(${esc(e.split_subtype)})</span>` : '';
           return `<tr class="clickable" data-tid="${focusTid}">
-            <td><span class="badge ${cls}">${e.event_type}</span></td>
-            <td>${e.parent_scan} -&gt; ${e.child_scan}</td>
-            <td>T${e.parent_track_ids.join(',T')} -&gt; T${e.child_track_ids.join(',T')}</td>
-            <td>${e.intensity_ratio}</td>
-            <td>${e.confidence}</td>
+            <td><span class="badge ${cls}">${esc(e.event_type)}</span>${sub}</td>
+            <td>${Number(e.parent_scan)} -&gt; ${Number(e.child_scan)}</td>
+            <td>T${e.parent_track_ids.map(Number).join(',T')} -&gt; T${e.child_track_ids.map(Number).join(',T')}</td>
+            <td>${esc(e.intensity_ratio)}</td>
+            <td>${esc(e.confidence)}</td>
           </tr>`;
         }).join('') + '</tbody></table>';
       evEl.querySelectorAll('tr.clickable').forEach(r => r.addEventListener('click', () => {
@@ -700,13 +706,13 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
       prEl.innerHTML = '<div class="meta">No persistent fracture precursor candidates above threshold.</div>';
     } else {
       prEl.innerHTML = `<table><thead><tr><th>Rank</th><th>Track</th><th>Onset..Peak</th><th>Persist</th><th>Peak Score</th><th>Subpeaks</th><th>Split?</th></tr></thead><tbody>` +
-        DATA.precursors.map(p => `<tr class="clickable" data-tid="${p.track_id}">
-          <td>#${p.rank}</td>
-          <td><strong>T${p.track_id}</strong></td>
-          <td>S${p.onset_scan}..S${p.peak_scan}</td>
-          <td>${p.persistence_scans} scans</td>
-          <td>${p.peak_score}</td>
-          <td>${p.max_subpeak_count}</td>
+        DATA.precursors.map(p => `<tr class="clickable" data-tid="${Number(p.track_id)}">
+          <td>#${Number(p.rank)}</td>
+          <td><strong>T${Number(p.track_id)}</strong></td>
+          <td>S${Number(p.onset_scan)}..S${Number(p.peak_scan)}</td>
+          <td>${Number(p.persistence_scans)} scans</td>
+          <td>${esc(p.peak_score)}</td>
+          <td>${Number(p.max_subpeak_count)}</td>
           <td>${p.subsequent_split ? '<span class="badge b-split">Yes</span>' : 'No'}</td>
         </tr>`).join('') + '</tbody></table>';
       prEl.querySelectorAll('tr.clickable').forEach(r => r.addEventListener('click', () => {

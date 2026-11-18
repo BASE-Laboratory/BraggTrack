@@ -138,6 +138,13 @@ def _merge_config_overrides(args: argparse.Namespace) -> dict[str, Any]:
         cfg_data = json.loads(Path(args.config).read_text())
         if not isinstance(cfg_data, dict):
             raise ValueError("--config must point to a JSON object")
+        allowed_keys = set(effective.keys()) | {"root"}
+        unknown_keys = sorted(set(cfg_data.keys()) - allowed_keys)
+        if unknown_keys:
+            raise ValueError(
+                f"Unknown --config override key(s): {', '.join(unknown_keys)}. "
+                f"Allowed keys: {', '.join(sorted(allowed_keys))}"
+            )
         effective.update(cfg_data)
     return effective
 

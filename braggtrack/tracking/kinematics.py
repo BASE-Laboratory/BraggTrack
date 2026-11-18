@@ -59,11 +59,12 @@ class GrainKinematics:
     lineage_strain: np.ndarray = field(default_factory=lambda: np.empty(0, dtype=np.float64))
     lineage_strain_err: np.ndarray = field(default_factory=lambda: np.empty(0, dtype=np.float64))
 
-    # Strictly causal backward finite-difference rates (per scan step)
+    # Strictly causal backward finite-difference rates (per scan step, plus per-second when elapsed_s known)
     rate_mu: np.ndarray = field(default_factory=lambda: np.empty(0, dtype=np.float64))
     rate_chi: np.ndarray = field(default_factory=lambda: np.empty(0, dtype=np.float64))
     rate_d: np.ndarray = field(default_factory=lambda: np.empty(0, dtype=np.float64))
     strain_rate: np.ndarray = field(default_factory=lambda: np.empty(0, dtype=np.float64))
+    strain_rate_per_s: np.ndarray = field(default_factory=lambda: np.empty(0, dtype=np.float64))
 
 
 @dataclass
@@ -131,8 +132,27 @@ def _propagate_strain_err(
     return err
 
 
+def _obs_elapsed_s(row: dict[str, Any], scan_elapsed_s: dict[int, float] | None) -> float | None:
+    s_idx = int(row["scan_idx"])
+    if scan_elapsed_s is not None and s_idx in scan_elapsed_s:
+        val = scan_elapsed_s[s_idx]
+        if val is not None and np.isfinite(val):
+            return float(val)
+    raw = row.get("elapsed_s")
+    if raw is not None and raw != "":
+        try:
+            f = float(raw)
+            if np.isfinite(f):
+                return f
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
 def compute_grain_kinematics(
     track_table: list[dict[str, Any]],
+    *,
+    scan_elapsed_s: dict[int, float] | None = None,
 ) -> list[GrainKinematics]:
     """Compute kinematic time-series for each tracked grain.
 
@@ -144,6 +164,8 @@ def compute_grain_kinematics(
         ``centroid_chi``, ``centroid_d``, ``eig_1``, ``eig_2``, ``eig_3``,
         ``integrated_intensity``, ``voxel_count``, plus optional
         ``centroid_*_err`` and ``parent_track_ids``.
+    scan_elapsed_s
+        Optional mapping ``scan_idx -> elapsed_seconds`` for non-uniform scan cadences.
 
     Returns
     -------
@@ -217,11 +239,12 @@ def compute_grain_kinematics(
             zero_first=(root_tid == tid),
         )
 
-        # Strictly causal backward finite-difference rates (per scan step)
+        # Strictly causal backward finite-difference rates (per scan step & wall-clock /s)
         rate_mu = np.zeros(n, dtype=np.float64)
         rate_chi = np.zeros(n, dtype=np.float64)
         rate_d = np.zeros(n, dtype=np.float64)
         strain_rate = np.zeros(n, dtype=np.float64)
+        strain_rate_per_s = np.zeros(n, dtype=np.float64)
 
         # Seed initial rate at i=0 from immediate parent's last observation if split/merge child
         imm_parents = [p for p in parent_map.get(tid, []) if p in sorted_tracks]
@@ -234,6 +257,10 @@ def compute_grain_kinematics(
             if d_root0 != 0.0:
                 p_lin_strain = (float(p_last["centroid_d"]) - d_root0) / d_root0
                 strain_rate[0] = (lineage_strain[0] - p_lin_strain) / dt0
+                t_now0 = _obs_elapsed_s(obs[0], scan_elapsed_s)
+                t_prev0 = _obs_elapsed_s(p_last, scan_elapsed_s)
+                if t_now0 is not None and t_prev0 is not None and (t_now0 - t_prev0) > 1e-6:
+                    strain_rate_per_s[0] = (lineage_strain[0] - p_lin_strain) / (t_now0 - t_prev0)
 
         for i in range(1, n):
             dt = max(1, scan_indices[i] - scan_indices[i - 1])
@@ -241,6 +268,10 @@ def compute_grain_kinematics(
             rate_chi[i] = (chi[i] - chi[i - 1]) / dt
             rate_d[i] = (d[i] - d[i - 1]) / dt
             strain_rate[i] = (lineage_strain[i] - lineage_strain[i - 1]) / dt
+            t_now = _obs_elapsed_s(obs[i], scan_elapsed_s)
+            t_prev = _obs_elapsed_s(obs[i - 1], scan_elapsed_s)
+            if t_now is not None and t_prev is not None and (t_now - t_prev) > 1e-6:
+                strain_rate_per_s[i] = (lineage_strain[i] - lineage_strain[i - 1]) / (t_now - t_prev)
 
         # Misorientation: drift from initial position
         dmu = mu - mu[0]
@@ -255,9 +286,23 @@ def compute_grain_kinematics(
         rel_intensity = (intensity - i0) / i0 if i0 != 0 else np.zeros(n, dtype=np.float64)
         rel_volume = (voxels - v0) / v0 if v0 != 0 else np.zeros(n, dtype=np.float64)
 
-        eigs = np.array([[float(r["eig_1"]), float(r["eig_2"]), float(r["eig_3"])] for r in obs], dtype=np.float64)
-        e3 = eigs[:, 2]
-        anisotropy = np.where(e3 > 0, eigs[:, 0] / e3, 1.0)
+        eigs = np.array(
+            [[float(r.get("eig_1", 1.0)), float(r.get("eig_2", 1.0)), float(r.get("eig_3", 1.0))] for r in obs],
+            dtype=np.float64,
+        )
+        shape_eigs = np.array(
+            [
+                [
+                    float(r.get("vox_eig_1", r.get("eig_1", 1.0))),
+                    float(r.get("vox_eig_2", r.get("eig_2", 1.0))),
+                    float(r.get("vox_eig_3", r.get("eig_3", 1.0))),
+                ]
+                for r in obs
+            ],
+            dtype=np.float64,
+        )
+        e3 = shape_eigs[:, 2]
+        anisotropy = np.where(e3 > 0, shape_eigs[:, 0] / e3, 1.0)
         cov_trace = eigs.sum(axis=1)
 
         results.append(
@@ -290,6 +335,7 @@ def compute_grain_kinematics(
                 rate_chi=rate_chi,
                 rate_d=rate_d,
                 strain_rate=strain_rate,
+                strain_rate_per_s=strain_rate_per_s,
             )
         )
     return results

@@ -58,7 +58,7 @@ class BeamlineAdapter:
                 volume_path = discover_primary_volume_path(scan_file.path)
             except (KeyError, ValueError):
                 volume_path = None
-        except MissingH5DependencyError as exc:
+        except (MissingH5DependencyError, OSError) as exc:
             metadata_error = str(exc)
 
         extras: dict[str, Any] = {}
