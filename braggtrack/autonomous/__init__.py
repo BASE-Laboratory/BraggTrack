@@ -1,48 +1,40 @@
-"""Online causal streaming and FAL Level 3 autonomous DFXM "Scout-and-Zoom" engine."""
+"""Online causal streaming, GP forecasting, and autonomous DFXM "Scout-and-Zoom" engine."""
 
-from .odd import (
-    CHI2_DF3_P95,
-    CHI2_DF3_P99,
-    DEFAULT_VALIDITY_EPSILON,
-    BulkReferencePrior,
-    ExecutionMode,
-    FALActiveLevel,
-    HypothesisMode,
-    OperationalDesignDomain,
-    SimToRealAuditRecord,
-    compute_sim_to_real_gap,
-    spot_kurtosis_non_gaussianity,
+from .gp import (
+    AcquisitionKind,
+    GPForecast,
+    evaluate_acquisition,
+    forecast_1d_gp,
+    forecast_grain_trajectory_gp,
+    score_candidates_gp,
 )
 from .replay import PolicyReplayMetrics, ReplayBenchmarkResult, evaluate_causal_replay
 from .streaming import CausalStreamingTracker, StreamingStepResult
 from .trigger import (
+    ExecutionMode,
     ZoomTarget,
     ZoomTriggerPolicy,
-    compute_predictive_std,
+    clamp_setpoint_bounds,
     compute_target_geometry,
     select_zoom_targets,
 )
 
 __all__ = [
-    "CHI2_DF3_P95",
-    "CHI2_DF3_P99",
-    "DEFAULT_VALIDITY_EPSILON",
-    "BulkReferencePrior",
+    "AcquisitionKind",
     "CausalStreamingTracker",
     "ExecutionMode",
-    "FALActiveLevel",
-    "HypothesisMode",
-    "OperationalDesignDomain",
+    "GPForecast",
     "PolicyReplayMetrics",
     "ReplayBenchmarkResult",
-    "SimToRealAuditRecord",
     "StreamingStepResult",
     "ZoomTarget",
     "ZoomTriggerPolicy",
-    "compute_predictive_std",
-    "compute_sim_to_real_gap",
+    "clamp_setpoint_bounds",
     "compute_target_geometry",
+    "evaluate_acquisition",
     "evaluate_causal_replay",
+    "forecast_1d_gp",
+    "forecast_grain_trajectory_gp",
+    "score_candidates_gp",
     "select_zoom_targets",
-    "spot_kurtosis_non_gaussianity",
 ]

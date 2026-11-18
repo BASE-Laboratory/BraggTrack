@@ -1,4 +1,4 @@
-"""Red-Team hardening and Facility Autonomy Levels (FAL Level 3) verification suite."""
+"""Red-Team hardening, Gaussian Process forecasting, and Bayesian ask-tell verification suite."""
 
 from __future__ import annotations
 
@@ -10,11 +10,10 @@ import numpy as np
 import pytest
 
 from braggtrack.autonomous import (
-    BulkReferencePrior,
     CausalStreamingTracker,
-    OperationalDesignDomain,
     ZoomTriggerPolicy,
-    compute_sim_to_real_gap,
+    forecast_1d_gp,
+    forecast_grain_trajectory_gp,
 )
 from braggtrack.cli import run_pipeline, watch_autonomous
 from braggtrack.io import AxisCalibration, ScanStimulusPoint
@@ -223,129 +222,122 @@ def test_pedestal_subtraction_rocking_kurtosis_border_flags_and_float32_segmenta
     assert rgb_raw.shape == (6, 40, 3)
 
 
-def test_fal_level3_sim_to_real_gap_calibrated_monte_carlo_and_unit_invariance() -> None:
-    """Verify FAL Eq. (4) closed-form Sim-to-Real Gap E[Delta_gap]=0, chi^2 coverage, and unit invariance."""
+def test_gp_trajectory_forecasting_beats_finite_difference_under_noise_and_nonuniform_time() -> None:
+    """Heteroscedastic Universal Kriging GP must beat 2-point finite differences under noise and non-uniform dt."""
     rng = np.random.default_rng(42)
-    pred_mean = (12.4, -1.8, 2.045)
-    pred_std = (0.04, 0.08, 0.0015)
+    times = np.array([0.0, 30.0, 65.0, 110.0, 150.0, 210.0], dtype=np.float64)
+    target_t = 270.0
+    sigma_noise = 0.08
 
-    gaps: list[float] = []
-    in_95_flags: list[bool] = []
-    in_valid_flags: list[bool] = []
-    for _ in range(3000):
-        obs = (
-            float(rng.normal(pred_mean[0], pred_std[0])),
-            float(rng.normal(pred_mean[1], pred_std[1])),
-            float(rng.normal(pred_mean[2], pred_std[2])),
-        )
-        g, _, c95, cval = compute_sim_to_real_gap(pred_mean, pred_std, obs)
-        gaps.append(g)
-        in_95_flags.append(c95)
-        in_valid_flags.append(cval)
+    # Smooth accelerating H2->H3-like contraction trajectory + Poisson centroid noise
+    def _true_fn(t: np.ndarray | float) -> np.ndarray | float:
+        tau = np.asarray(t) / 60.0
+        return 2.050 - 0.012 * tau - 0.0025 * (tau**1.6)
 
-    assert float(np.mean(gaps)) == pytest.approx(0.0, abs=0.06)
-    assert 0.935 <= float(np.mean(in_95_flags)) <= 0.965
-    assert 0.982 <= float(np.mean(in_valid_flags)) <= 0.997
+    y_clean = np.asarray(_true_fn(times), dtype=np.float64)
+    y_target = float(_true_fn(target_t))
+    obs_std = np.full_like(times, sigma_noise)
 
-    # Exact affine/unit invariance between voxel space and calibrated physical units
-    g_vox, m2_vox, _, _ = compute_sim_to_real_gap((10.0, 20.0, 30.0), (1.5, 2.0, 0.8), (11.2, 18.5, 30.6))
-    scales = (0.02, 0.05, 0.0004)
-    origins = (14.0, -3.5, 4.72)
-    g_phys, m2_phys, _, _ = compute_sim_to_real_gap(
-        tuple(o + s * x for o, s, x in zip(origins, scales, (10.0, 20.0, 30.0), strict=True)),  # type: ignore[arg-type]
-        tuple(s * sig for s, sig in zip(scales, (1.5, 2.0, 0.8), strict=True)),  # type: ignore[arg-type]
-        tuple(o + s * x for o, s, x in zip(origins, scales, (11.2, 18.5, 30.6), strict=True)),  # type: ignore[arg-type]
-    )
-    assert g_phys == pytest.approx(g_vox, abs=1e-10)
-    assert m2_phys == pytest.approx(m2_vox, abs=1e-10)
+    gp_errs: list[float] = []
+    fd_errs: list[float] = []
+    for _ in range(250):
+        y_obs = y_clean + rng.normal(0.0, sigma_noise, size=len(times))
+        gp_mean, gp_std = forecast_1d_gp(times, y_obs, obs_std, target_t, min_std_floor=1e-4)
+        assert gp_std > 0.0
+        # 2-point backward finite difference on last two observations
+        fd_slope = (y_obs[-1] - y_obs[-2]) / (times[-1] - times[-2])
+        fd_pred = float(y_obs[-1] + fd_slope * (target_t - times[-1]))
+        gp_errs.append(abs(gp_mean - y_target))
+        fd_errs.append(abs(fd_pred - y_target))
+
+    # Universal Kriging GP smoothing across the trajectory substantially lowers forecast MAE vs 2-point FD!
+    assert float(np.mean(gp_errs)) < 0.72 * float(np.mean(fd_errs))
+
+    # Verify 3D heteroscedastic forecast_grain_trajectory_gp respects high-uncertainty outlier downweighting
+    t_3d = np.array([0.0, 60.0, 120.0, 180.0], dtype=np.float64)
+    mu_vals = np.array([10.0, 10.2, 10.4, 11.9], dtype=np.float64)  # Last frame corrupted by low-flux jitter
+    mu_errs = np.array([0.02, 0.02, 0.02, 1.50], dtype=np.float64)  # High Poisson uncertainty on frame 3
+    chi_vals = np.array([-2.0, -2.1, -2.2, -2.3], dtype=np.float64)
+    d_vals = np.array([2.04, 2.03, 2.02, 2.01], dtype=np.float64)
+    small_err = np.full(4, 0.005, dtype=np.float64)
+
+    gp_3d = forecast_grain_trajectory_gp(t_3d, mu_vals, chi_vals, d_vals, mu_errs, small_err, small_err, 240.0)
+    # Inverse-variance weighting ignores the noisy 11.9 spike and stays right near 10.8!
+    assert gp_3d.mean[0] == pytest.approx(10.8, abs=0.12)
+    assert gp_3d.mean[1] == pytest.approx(-2.4, abs=0.03)
+    assert gp_3d.mean[2] == pytest.approx(2.00, abs=0.01)
 
 
-def test_fal_level3_hypothesis_switching_odd_safety_and_beam_dump_suppression() -> None:
-    """Verify FAL L3 Condition (iii) hypothesis dependence, ODD clamping/voltage halt, dose cap, and beam-dump suppression."""
+def test_ask_tell_protocol_bayesian_acquisitions_and_safety_guardrails() -> None:
+    """Verify Bluesky-Adaptive tell/ask/report grammar, UCB/EI/max_variance, zoom outcome conditioning, and bounds."""
     shape = (24, 44, 44)
     vols: list[np.ndarray] = []
     for t in range(4):
         v = np.full(shape, 0.2, dtype=np.float32)
-        # Grain M (near z=6, y=10, x=12): progressive anisotropic orientation broadening, zero d-shift
+        # Grain M (near z=6, y=10, x=12): progressive anisotropic mosaicity broadening
         sx_m = 1.1 if t == 0 else (2.4 + 0.6 * t)
         _add_spot(v, (6.0, 10.0, 12.0), (1.1, 1.1, sx_m), 260.0)
-
-        # Grain P (near z=17, y=34 - 2.2*t, x=30): spherical peak, fast phase-nucleation d-contraction
-        _add_spot(v, (17.0, 34.0 - 2.2 * t, 30.0), (1.15, 1.15, 1.15), 260.0)
-
-        # Grain D (near z=17, y=12, x=30): sharp core + sub-Otsu directional rocking wings -> high positive kurtosis g_2
-        if t == 0:
-            _add_spot(v, (17.0, 12.0, 30.0), (1.15, 1.15, 1.15), 260.0)
-        else:
-            _add_spot(v, (17.0, 12.0, 30.0), (0.95, 0.95, 0.85), 270.0)
-            _add_spot(v, (17.0, 12.0, 30.0), (1.05, 3.0, 1.05), 22.0)
+        # Grain S (near z=17, y=30, x=30): stable spherical control grain
+        _add_spot(v, (17.0, 30.0, 30.0), (1.15, 1.15, 1.15), 260.0)
         vols.append(v)
 
-    def _run_with_hypothesis(hyp: str) -> tuple[float, float, float]:
-        pol = ZoomTriggerPolicy(
-            hypothesis=hyp,  # type: ignore[arg-type]
-            min_precursor_score=0.28,
-            min_persistence=2,
-            max_triggers_per_scan=1,
-            cooldown_scans=5,
-        )
-        trk = CausalStreamingTracker(
-            backend="mock",
-            trigger_policy=pol,
-            reference_prior=BulkReferencePrior(kurtosis_mean=0.0, kurtosis_std=0.20),
-        )
-        triggered = [tgt for t in range(3) for tgt in trk.step(vols[t]).zoom_targets]
-        assert len(triggered) >= 1
-        return triggered[-1].current_centroid
-
-    c_mech = _run_with_hypothesis("mechanical_fracture")
-    c_phase = _run_with_hypothesis("phase_nucleation")
-    c_dis = _run_with_hypothesis("intragranular_disorder")
-
-    # Different declared hypotheses steer DFXM zoom to the three physically distinct grains!
-    assert abs(c_mech[0] - 6.0) < 1.5  # Grain M at mu ~ 6
-    assert abs(c_phase[0] - 17.0) < 1.5 and c_phase[2] > 28.0  # Grain P at (mu=17, d ~ 29.6..31.8)
-    assert abs(c_dis[0] - 17.0) < 1.5 and abs(c_dis[2] - 12.0) < 1.5  # Grain D at (mu=17, d=12)
-
-    # Test ODD motor soft-limit clamping, max_zooms_per_lineage=1, voltage ODD halt, and beam dump suppression
-    odd = OperationalDesignDomain(
-        mu_bounds=(0.0, 5.5),
-        voltage_bounds_v=(2.8, 4.40),
-        max_zooms_per_lineage=1,
-    )
-    pol_active = ZoomTriggerPolicy(
-        hypothesis="mechanical_fracture",
+    pol = ZoomTriggerPolicy(
+        acquisition="ucb",
+        ucb_beta=1.96,
         execution_mode="active",
         min_precursor_score=0.28,
         min_persistence=2,
         cooldown_scans=1,
-        odd=odd,
+        mu_bounds=(0.0, 5.5),
+        voltage_bounds_v=(2.8, 4.40),
+        max_zooms_per_lineage=1,
     )
-    trk_odd = CausalStreamingTracker(backend="mock", trigger_policy=pol_active)
-    trk_odd.step(vols[0], stimulus=ScanStimulusPoint(scan_idx=0, scan_name="s0", elapsed_s=0.0, voltage_v=4.05))
-    trk_odd.step(vols[1], stimulus=ScanStimulusPoint(scan_idx=1, scan_name="s1", elapsed_s=60.0, voltage_v=4.15))
-    s2 = trk_odd.step(vols[2], stimulus=ScanStimulusPoint(scan_idx=2, scan_name="s2", elapsed_s=120.0, voltage_v=4.22))
-    assert len(s2.zoom_targets) == 1
-    assert s2.zoom_targets[0].actuate is True
-    assert s2.zoom_targets[0].predicted_setpoint[0] <= 5.5 + 1e-9
-    assert "clamped_to_motor_bounds" in s2.zoom_targets[0].trigger_reasons
+    trk = CausalStreamingTracker(backend="mock", trigger_policy=pol)
 
-    # Scan 3: Grain M already hit max_zooms_per_lineage=1 -> dose cap prevents re-zooming same grain!
-    s3 = trk_odd.step(vols[3], stimulus=ScanStimulusPoint(scan_idx=3, scan_name="s3", elapsed_s=180.0, voltage_v=4.28))
-    assert len(s3.zoom_targets) == 0
-    assert len(s3.audit_records) == 1  # Sim-to-Real Gap automatically audited for scan 2's prediction!
+    # Step through scans 0..2 via explicit tell() / ask() protocol
+    trk.tell(vols[0], stimulus=ScanStimulusPoint(scan_idx=0, scan_name="s0", elapsed_s=0.0, voltage_v=4.05))
+    assert trk.ask(commit=False) == []
 
-    # Scan 4: Over-voltage excursion (4.65V > 4.40V) halts L3 autonomy -> L1_halt
-    s4 = trk_odd.step(vols[2], stimulus=ScanStimulusPoint(scan_idx=4, scan_name="s4", elapsed_s=240.0, voltage_v=4.65))
-    assert s4.fal_level_active == "L1_halt"
+    trk.tell(vols[1], stimulus=ScanStimulusPoint(scan_idx=1, scan_name="s1", elapsed_s=60.0, voltage_v=4.15))
+    trk.tell(vols[2], stimulus=ScanStimulusPoint(scan_idx=2, scan_name="s2", elapsed_s=120.0, voltage_v=4.22))
+
+    # Non-committing queries across all three standard Bayesian acquisition functions
+    ucb_preview = trk.ask(n=1, acquisition="ucb", commit=False)
+    ei_preview = trk.ask(n=1, acquisition="ei", commit=False)
+    var_preview = trk.ask(n=2, acquisition="max_variance", commit=False)
+    assert len(ucb_preview) == 1 and ucb_preview[0].acquisition_kind == "ucb"
+    assert len(ei_preview) == 1 and ei_preview[0].acquisition_kind == "ei"
+    assert len(var_preview) == 2 and var_preview[0].acquisition_kind == "max_variance"
+
+    # Commit the UCB zoom decision at scan 2
+    committed = trk.ask(n=1, acquisition="ucb", commit=True)
+    assert len(committed) == 1
+    assert committed[0].actuate is True
+    assert committed[0].predicted_setpoint[0] <= 5.5 + 1e-9
+    assert "clamped_to_motor_bounds" in committed[0].trigger_reasons
+
+    # Feed back a measured DFXM zoom outcome (multi-fidelity GP conditioning) and verify report()
+    trk.tell_zoom_outcome(committed[0].track_id, outcome=0.92)
+    rep = trk.report()
+    assert rep["n_scans_processed"] == 3
+    assert rep["n_zoom_targets_emitted"] == 1
+    assert rep["n_zoom_outcomes_recorded"] == 1
+    assert rep["beam_ok"] is True
+
+    # Scan 3: Grain M already reached max_zooms_per_lineage=1 -> dose cap prevents re-zooming same grain
+    trk.tell(vols[3], stimulus=ScanStimulusPoint(scan_idx=3, scan_name="s3", elapsed_s=180.0, voltage_v=4.28))
+    after_dose_cap = trk.ask(n=1, acquisition="ucb", commit=False)
+    assert all(t.root_track_id != committed[0].root_track_id for t in after_dose_cap)
+
+    # Scan 4: Over-voltage excursion (4.65V > 4.40V) pauses autonomous triggers
+    s4 = trk.step(vols[2], stimulus=ScanStimulusPoint(scan_idx=4, scan_name="s4", elapsed_s=240.0, voltage_v=4.65))
     assert s4.zoom_targets == []
 
-    # Scan 5: Synchrotron beam dump (flux drops to 1% of baseline) -> instrument_health < 0.25 -> L1_halt
-    s5 = trk_odd.step(
+    # Scan 5: Synchrotron beam dump (flux drops to 1% of baseline) -> beam_ok is False & zero triggers
+    s5 = trk.step(
         vols[2] * 0.01, stimulus=ScanStimulusPoint(scan_idx=5, scan_name="s5", elapsed_s=300.0, voltage_v=4.20)
     )
-    assert s5.instrument_health < 0.10
-    assert s5.fal_level_active == "L1_halt"
+    assert s5.beam_ok is False
     assert s5.zoom_targets == []
 
 
@@ -390,6 +382,8 @@ def test_o1_sliding_window_streaming_and_live_hdf5_quiescence_shadow_mode(tmp_pa
             str(ds_root),
             "--mode",
             "shadow",
+            "--acquisition",
+            "ucb",
             "--backend",
             "mock",
             "--min-precursor-score",
@@ -413,14 +407,10 @@ def test_o1_sliding_window_streaming_and_live_hdf5_quiescence_shadow_mode(tmp_pa
         if line.strip()
     ]
     assert len(trig_lines) >= 1
-    assert all(cmd["actuate"] is False and cmd["execution_mode"] == "shadow" for cmd in trig_lines)
-    audit_lines = [
-        json.loads(line)
-        for line in (out_shadow / "audit_trajectory.jsonl").read_text(encoding="utf-8").splitlines()
-        if line.strip()
-    ]
-    assert len(audit_lines) >= 1
-    assert audit_lines[0]["schema_version"] == "fal_audit.v1"
+    assert all(
+        cmd["actuate"] is False and cmd["execution_mode"] == "shadow" and cmd["acquisition"] == "ucb"
+        for cmd in trig_lines
+    )
 
 
 def test_html_report_xss_csp_escaping_and_strict_pipeline_config_validation(tmp_path: Path) -> None:

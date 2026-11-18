@@ -1,18 +1,18 @@
 """Closed-loop retrospective causal replay benchmark for autonomous DFXM zoom.
 
 Replays a recorded 4D operando diffraction dataset strictly scan-by-scan through
-:class:`CausalStreamingTracker` and evaluates whether autonomous zoom triggers fire
-*before* actual ``1 -> 2+`` grain fracture events, whether velocity-extrapolated
-motor setpoints accurately capture the grain at ``t + 1``, the closed-form FAL Eq. (4)
-Sim-to-Real Gap ($\\Delta_{\\text{gap}}$) distribution, and how ``BraggTrack`` compares
-against naive beamline trigger baselines (``random``, ``brightest_intensity``, and
-``strain_only``) under an identical zoom acquisition budget.
+:class:`CausalStreamingTracker` and evaluates whether GP-guided zoom triggers fire
+*before* actual ``1 -> 2+`` grain fracture events, whether GP-extrapolated motor
+setpoints accurately center the grain at ``t + 1`` (reporting physical setpoint MAE
+alongside hit rate), and how ``BraggTrack`` compares against naive beamline trigger
+baselines (``random``, ``brightest_intensity``, and ``strain_only``) under an
+identical zoom acquisition budget.
 """
 
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -21,9 +21,8 @@ import numpy as np
 from braggtrack.tracking.kinematics import compute_grain_kinematics
 from braggtrack.tracking.precursors import PrecursorConfig
 
-from .odd import SimToRealAuditRecord
 from .streaming import CausalStreamingTracker, StreamingStepResult
-from .trigger import ZoomTarget, ZoomTriggerPolicy, compute_target_geometry
+from .trigger import ZoomTarget, ZoomTriggerPolicy, clamp_setpoint_bounds, compute_target_geometry
 
 if TYPE_CHECKING:
     from braggtrack.io.crystallography import DetectorGeometry
@@ -46,6 +45,7 @@ class PolicyReplayMetrics:
     mean_lead_voltage_mv: float | None
     setpoint_hit_rate_next_scan: float
     static_centroid_hit_rate_next_scan: float
+    mean_setpoint_mae: tuple[float, float, float] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -61,12 +61,15 @@ class PolicyReplayMetrics:
             ),
             "setpoint_hit_rate_next_scan": round(float(self.setpoint_hit_rate_next_scan), 4),
             "static_centroid_hit_rate_next_scan": round(float(self.static_centroid_hit_rate_next_scan), 4),
+            "mean_setpoint_mae": (
+                [round(float(x), 6) for x in self.mean_setpoint_mae] if self.mean_setpoint_mae is not None else None
+            ),
         }
 
 
 @dataclass(frozen=True)
 class ReplayBenchmarkResult:
-    """Complete causal replay trajectory, FAL Sim-to-Real audit, and baseline comparison table."""
+    """Complete causal replay trajectory and baseline comparison table."""
 
     n_scans: int
     mean_step_latency_sec: float
@@ -74,11 +77,6 @@ class ReplayBenchmarkResult:
     steps: list[StreamingStepResult]
     zoom_targets: list[ZoomTarget]
     policy_comparison: dict[str, PolicyReplayMetrics]
-    audit_records: list[SimToRealAuditRecord] = field(default_factory=list)
-    mean_sim_to_real_gap: float | None = None
-    p99_sim_to_real_gap: float | None = None
-    nominal_95pct_coverage: float | None = None
-    esme_gain_vs_scripted: float | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -86,20 +84,7 @@ class ReplayBenchmarkResult:
             "mean_step_latency_sec": round(float(self.mean_step_latency_sec), 4),
             "max_step_latency_sec": round(float(self.max_step_latency_sec), 4),
             "n_zoom_targets": len(self.zoom_targets),
-            "mean_sim_to_real_gap": (
-                round(float(self.mean_sim_to_real_gap), 5) if self.mean_sim_to_real_gap is not None else None
-            ),
-            "p99_sim_to_real_gap": (
-                round(float(self.p99_sim_to_real_gap), 5) if self.p99_sim_to_real_gap is not None else None
-            ),
-            "nominal_95pct_coverage": (
-                round(float(self.nominal_95pct_coverage), 4) if self.nominal_95pct_coverage is not None else None
-            ),
-            "esme_gain_vs_scripted": (
-                round(float(self.esme_gain_vs_scripted), 3) if self.esme_gain_vs_scripted is not None else None
-            ),
             "zoom_targets": [t.to_bliss_command() for t in self.zoom_targets],
-            "audit_records": [a.to_dict() for a in self.audit_records],
             "policy_comparison": {k: v.to_dict() for k, v in self.policy_comparison.items()},
             "steps": [s.to_dict() for s in self.steps],
         }
@@ -121,6 +106,7 @@ def _score_trigger_events(
     next_scan_eval_count = 0
     extrap_hits = 0
     static_hits = 0
+    abs_errs: list[tuple[float, float, float]] = []
 
     for trig_scan, root_tid, cur_c, pred_c, half_w in triggers:
         sp_scan = split_scan_by_root.get(root_tid)
@@ -139,6 +125,8 @@ def _score_trigger_events(
                 extrap_hits += 1
             if any(abs(m - cm) <= hm and abs(c - cc) <= hc and abs(d - cd) <= hd for m, c, d in next_obs):
                 static_hits += 1
+            closest = min(next_obs, key=lambda o: (o[0] - pm) ** 2 + (o[1] - pc) ** 2 + (o[2] - pd) ** 2)
+            abs_errs.append((abs(closest[0] - pm), abs(closest[1] - pc), abs(closest[2] - pd)))
 
     lead_scans = [split_scan_by_root[r] - s for r, s in captured_roots.items()]
     lead_mv: list[float] = []
@@ -154,6 +142,15 @@ def _score_trigger_events(
     mean_mv = float(np.mean(lead_mv)) if lead_mv else None
     extrap_rate = (extrap_hits / next_scan_eval_count) if next_scan_eval_count > 0 else 0.0
     static_rate = (static_hits / next_scan_eval_count) if next_scan_eval_count > 0 else 0.0
+    mae = (
+        (
+            float(np.mean([e[0] for e in abs_errs])),
+            float(np.mean([e[1] for e in abs_errs])),
+            float(np.mean([e[2] for e in abs_errs])),
+        )
+        if abs_errs
+        else None
+    )
 
     return PolicyReplayMetrics(
         policy_name=policy_name,
@@ -166,6 +163,7 @@ def _score_trigger_events(
         mean_lead_voltage_mv=mean_mv,
         setpoint_hit_rate_next_scan=extrap_rate,
         static_centroid_hit_rate_next_scan=static_rate,
+        mean_setpoint_mae=mae,
     )
 
 
@@ -184,7 +182,6 @@ def evaluate_causal_replay(
 ) -> ReplayBenchmarkResult:
     """Run strictly causal scan-by-scan replay and benchmark against naive trigger baselines."""
     pol = trigger_policy or ZoomTriggerPolicy()
-    odd = pol.resolved_odd()
     tracker = CausalStreamingTracker(
         backend=backend,
         calibration=calibration,
@@ -197,12 +194,12 @@ def evaluate_causal_replay(
     causal_pools: list[
         list[
             tuple[
-                int,  # root_tid
-                float,  # integrated_intensity
-                float,  # abs_lineage_strain
-                tuple[float, float, float],  # cur_c
-                tuple[float, float, float],  # pred_c
-                tuple[float, float, float],  # half_w
+                int,
+                float,
+                float,
+                tuple[float, float, float],
+                tuple[float, float, float],
+                tuple[float, float, float],
             ]
         ]
     ] = []
@@ -242,7 +239,7 @@ def evaluate_causal_replay(
             if inten < pol.min_intensity:
                 continue
             l_strain = abs(float(kin.lineage_strain[pos])) if len(kin.lineage_strain) > pos else 0.0
-            cur_c, pred_c, half_w, _, _ = compute_target_geometry(
+            cur_c, pred_c, half_w, _, _, _ = compute_target_geometry(
                 obs,
                 kin,
                 pos,
@@ -250,13 +247,20 @@ def evaluate_causal_replay(
                 window_sigma=pol.window_sigma,
                 calibration=tracker.calibration,
                 detector=detector,
-                max_extrapolation_steps=odd.max_extrapolation_steps,
+                max_extrapolation_steps=pol.max_extrapolation_steps,
+                scan_elapsed_s=tracker._scan_elapsed_s if tracker._scan_elapsed_s else None,
+                use_gp=pol.use_gp_extrapolation,
             )
-            pred_c, half_w, _ = odd.clamp_setpoint(pred_c, half_w)
+            pred_c, half_w, _ = clamp_setpoint_bounds(
+                pred_c,
+                half_w,
+                mu_bounds=pol.mu_bounds,
+                chi_bounds=pol.chi_bounds,
+                d_bounds=pol.d_bounds,
+            )
             pool_t.append((root_tid, inten, l_strain, cur_c, pred_c, half_w))
         causal_pools.append(pool_t)
 
-    # Extract ground-truth lineage split scans and future positions across the full sequence
     full_table = tracker.track_table
     final_kin = compute_grain_kinematics(full_table) if full_table else []
     final_kin_by_tid = {k.track_id: k for k in final_kin}
@@ -295,7 +299,6 @@ def evaluate_causal_replay(
         (t.scan_idx, t.root_track_id, t.current_centroid, t.predicted_setpoint, t.scan_half_widths) for t in bt_targets
     ]
 
-    # Simulate naive causal baselines under the exact same zoom_budget and cooldown_scans
     rng = np.random.default_rng(seed)
 
     def _run_baseline(
@@ -342,17 +345,6 @@ def evaluate_causal_replay(
             voltage_by_scan=voltage_by_scan,
         )
 
-    audits = list(tracker.audit_records)
-    mean_gap = float(np.mean([a.delta_gap for a in audits])) if audits else None
-    p99_gap = float(np.percentile([a.delta_gap for a in audits], 99.0)) if audits else None
-    cov_95 = float(np.mean([1.0 if a.within_95pct_ci else 0.0 for a in audits])) if audits else None
-
-    # Entropy-Scaled Measurement Efficiency (E_SME) gain vs unguided scripted sampling
-    all_roots = {rtid for (_, rtid) in obs_by_scan_and_root}
-    scripted_hit_prob = (len(split_scan_by_root) / max(1, len(all_roots))) if split_scan_by_root else 0.0
-    bt_prec = comparison["braggtrack_autonomous"].fracture_capture_precision
-    esme_gain = (bt_prec / scripted_hit_prob) if scripted_hit_prob > 0.0 and bt_targets else None
-
     latencies = [s.step_latency_sec for s in steps] if steps else [0.0]
     return ReplayBenchmarkResult(
         n_scans=len(steps),
@@ -361,9 +353,4 @@ def evaluate_causal_replay(
         steps=steps,
         zoom_targets=bt_targets,
         policy_comparison=comparison,
-        audit_records=audits,
-        mean_sim_to_real_gap=mean_gap,
-        p99_sim_to_real_gap=p99_gap,
-        nominal_95pct_coverage=cov_95,
-        esme_gain_vs_scripted=esme_gain,
     )

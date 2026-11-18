@@ -1,21 +1,24 @@
-"""Strictly causal online scan-by-scan tracker for live beamline streaming.
+"""Strictly causal online scan-by-scan tracker with ``tell / ask / report`` agent protocol.
 
-Processes incoming 3D rocking-curve scans ``t = 0, 1, 2, ...`` without looking ahead:
-- Causal trailing-window median Otsu thresholding (using only scans ``<= t``), with chunked z-slab
-  streaming on HDF5 inputs and ``float32`` working volumes.
-- Upstream instrument-health weighting $\\mathcal{W}(\\mathbf{s}_t)$ (suppressing beam-dump false positives)
-  and Operational Design Domain ($\\mathcal{O}_{\\text{ODD}}$) verification.
-- 3D LoG + seeded watershed segmentation, background-pedestal subtraction, Poisson centroid error,
-  and standardized rocking-curve kurtosis $g_2$ extraction.
-- $O(1)$ bounded sliding-window incremental trajectory DAG updates for ``1,000+`` scan operando runs.
-- Automatic next-scan Sim-to-Real Gap ($\\Delta_{\\text{gap}}$, FAL Eq. 4) trajectory auditing.
+Processes incoming 3D rocking-curve scans ``t = 0, 1, 2, ...`` without future lookahead,
+adopting the ``tell()`` / ``ask()`` / ``report()`` agent grammar standardized in synchrotron
+autonomous frameworks (``Bluesky-Adaptive`` — Maffettone et al., 2023; ``gpCAM`` — Noack et al., 2021):
+
+- ``tell(scan, ...)``: ingests one new 3D scan with causal trailing-window Otsu thresholding,
+  ``float32`` LoG + watershed segmentation, outer-ring pedestal subtraction, batched ``DINOv2``
+  encoding, and bounded $O(1)$ sliding-window trajectory DAG updates.
+- ``ask(n, acquisition=...)``: queries the Gaussian Process trajectory forecaster and Bayesian
+  acquisition policy (``ucb``, ``ei``, ``max_variance``) for high-resolution DFXM zoom setpoints.
+- ``tell_zoom_outcome(track_id, outcome)``: optional multi-fidelity hook feeding back measured
+  DFXM zoom metrics (e.g. ``darfix`` mosaicity spread) into the ensemble GP.
+- ``step(scan, ...)``: single-call convenience wrapper executing ``tell()`` followed by ``ask()``.
 """
 
 from __future__ import annotations
 
 import math
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -46,12 +49,7 @@ from braggtrack.tracking.precursors import (
     compute_fracture_precursors,
 )
 
-from .odd import (
-    BulkReferencePrior,
-    FALActiveLevel,
-    SimToRealAuditRecord,
-    compute_sim_to_real_gap,
-)
+from .gp import AcquisitionKind
 from .trigger import ZoomTarget, ZoomTriggerPolicy, select_zoom_targets
 
 if TYPE_CHECKING:
@@ -62,7 +60,7 @@ if TYPE_CHECKING:
 
 @dataclass(frozen=True)
 class StreamingStepResult:
-    """Snapshot of online causal tracking, FAL telemetry, and autonomous DFXM triggers after scan ``scan_idx``."""
+    """Snapshot of online causal tracking and autonomous DFXM zoom targets after scan ``scan_idx``."""
 
     scan_idx: int
     scan_name: str
@@ -76,11 +74,7 @@ class StreamingStepResult:
     zoom_targets: list[ZoomTarget]
     step_latency_sec: float
     stimulus: ScanStimulusPoint | None = None
-    instrument_health: float = 1.0
-    fal_level_active: FALActiveLevel = "L3"
-    within_latency_budget: bool = True
-    odd_violations: tuple[str, ...] = ()
-    audit_records: list[SimToRealAuditRecord] = field(default_factory=list)
+    beam_ok: bool = True
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -95,17 +89,13 @@ class StreamingStepResult:
             "n_precursor_candidates": len(self.precursor_candidates),
             "zoom_targets": [t.to_bliss_command() for t in self.zoom_targets],
             "step_latency_sec": round(float(self.step_latency_sec), 4),
-            "within_latency_budget": bool(self.within_latency_budget),
-            "instrument_health": round(float(self.instrument_health), 4),
-            "fal_level_active": self.fal_level_active,
-            "odd_violations": list(self.odd_violations),
-            "audit_records": [a.to_dict() for a in self.audit_records],
+            "beam_ok": bool(self.beam_ok),
             "stimulus": self.stimulus.to_dict() if self.stimulus is not None else None,
         }
 
 
 class CausalStreamingTracker:
-    """Stateful strictly causal scan-by-scan 4D reflection tracker and FAL Level 3 zoom engine."""
+    """Stateful causal 4D reflection tracker and GP-driven ``tell / ask / report`` DFXM agent."""
 
     def __init__(
         self,
@@ -125,7 +115,6 @@ class CausalStreamingTracker:
         split_max_distance: float = 25.0,
         precursor_config: PrecursorConfig | None = None,
         trigger_policy: ZoomTriggerPolicy | None = None,
-        reference_prior: BulkReferencePrior | None = None,
         sliding_window_scans: int | None = 24,
         swmr: bool = False,
         batch_size: int = 32,
@@ -148,7 +137,6 @@ class CausalStreamingTracker:
         self.split_merge_config = SplitMergeConfig(max_distance=float(split_max_distance))
         self.precursor_config = precursor_config or PrecursorConfig()
         self.trigger_policy = trigger_policy or ZoomTriggerPolicy()
-        self._reference_prior = reference_prior
 
         self._multiview_encoder = (
             make_multiview_encoder(backend, model_name=model_name) if self.cost_beta > 0.0 else None
@@ -172,9 +160,10 @@ class CausalStreamingTracker:
         self._roi_cache: dict[tuple[int, int], tuple[int, float]] = {}
         self._cooldown_by_lineage: dict[int, int] = {}
         self._zoom_counts_by_lineage: dict[int, int] = {}
-        self._pending_zoom_targets: dict[int, list[ZoomTarget]] = {}
-        self._audit_records: list[SimToRealAuditRecord] = []
-        self._last_step_latency_sec: float = 0.0
+        self._zoom_outcomes: dict[int, tuple[np.ndarray, float]] = {}
+        self._step_latencies: list[float] = []
+        self._last_beam_ok: bool = True
+        self._last_active_cal: AxisCalibration = calibration or AxisCalibration()
 
         # Sliding-window state preserving global track_ids and root strain anchors in O(1)/step
         self._next_global_tid: int = 1
@@ -216,14 +205,6 @@ class CausalStreamingTracker:
     def all_zoom_targets(self) -> list[ZoomTarget]:
         return list(self._all_zoom_targets)
 
-    @property
-    def audit_records(self) -> list[SimToRealAuditRecord]:
-        return list(self._audit_records)
-
-    @property
-    def reference_prior(self) -> BulkReferencePrior | None:
-        return self._reference_prior
-
     def _resolve_volume_and_meta(
         self,
         volume_or_path: np.ndarray | str | Path,
@@ -262,22 +243,20 @@ class CausalStreamingTracker:
         name = scan_name or f"scan_{len(self._scan_tables) + 1:04d}"
         return vol, raw_thr, name, timestamp, cal
 
-    def _compute_instrument_health(self, vol: np.ndarray, min_health: float) -> float:
-        """Compute upstream synchrotron flux/shutter health $\\mathcal{W}(\\mathbf{s}_t) \\in [0, 1]$."""
+    def _check_beam_flux(self, vol: np.ndarray) -> bool:
+        """Return False during synchrotron beam dumps or closed-shutter scans."""
         flux = max(0.0, float(np.sum(vol, dtype=np.float64)))
         if not self._nominal_flux_history:
             if flux > 0.0:
                 self._nominal_flux_history.append(flux)
-            return 1.0 if flux > 0.0 else 0.0
-        win = self._nominal_flux_history[-self.smooth_window :]
-        baseline = float(np.median(win))
+            return flux > 0.0
+        baseline = float(np.median(self._nominal_flux_history[-self.smooth_window :]))
         if baseline <= 0.0:
-            return 1.0
-        ratio = flux / baseline
-        health = 1.0 if ratio >= 0.50 else float(np.clip(ratio / 0.50, 0.0, 1.0))
-        if health >= min_health and flux > 0.0:
+            return True
+        ok = (flux / baseline) >= float(self.trigger_policy.min_beam_fraction)
+        if ok and flux > 0.0:
             self._nominal_flux_history.append(flux)
-        return health
+        return ok
 
     def _build_window_dag(self, scan_idx: int) -> tuple[nx.DiGraph, list[dict[str, Any]], list[LineageEvent]]:
         """Build causal DAG over active window ``[win_start, scan_idx]`` with immutable global track IDs."""
@@ -288,7 +267,6 @@ class CausalStreamingTracker:
             else n_total - self.sliding_window_scans
         )
 
-        # Commit outgoing scans strictly before win_start from the previous step's window rows/events
         if win_start > 0 and self._committed_up_to_scan < win_start - 1:
             for row in self._window_rows:
                 s_i = int(row["scan_idx"])
@@ -299,7 +277,6 @@ class CausalStreamingTracker:
                 if self._committed_up_to_scan < ev.scan_idx_to < win_start:
                     self._committed_events.append(ev)
             self._committed_up_to_scan = win_start - 1
-            # Prune ROI cache older than win_start - 1 so RAM stays O(W)
             stale_keys = [k for k in self._roi_cache if k[0] < win_start - 1]
             for k in stale_keys:
                 del self._roi_cache[k]
@@ -327,7 +304,6 @@ class CausalStreamingTracker:
             G.graph["window_lineage_events"] = w_events
             return G, w_rows, w_events
 
-        # Sliding-window solve on scans [win_start .. scan_idx]
         sub_tables = self._scan_tables[win_start : scan_idx + 1]
         sub_ts = {k - win_start: v for k, v in self._scan_timestamps.items() if k >= win_start}
         G_local = build_tracks(
@@ -339,7 +315,6 @@ class CausalStreamingTracker:
             scan_timestamps=sub_ts,
         )
 
-        # Group local nodes by local_tid and map to persistent global_tid
         nodes_by_local_tid: dict[int, list[tuple[int, int, str]]] = {}
         for nid, data in G_local.nodes(data=True):
             ltid = int(data["track_id"])
@@ -360,7 +335,6 @@ class CausalStreamingTracker:
             used_globals.add(gtid)
             local_to_global[ltid] = gtid
 
-        # Rebuild relabeled window graph with global scan_idx and global track_id
         G_global = nx.DiGraph()
         nid_map: dict[str, str] = {}
         for nid, data in G_local.nodes(data=True):
@@ -428,81 +402,7 @@ class CausalStreamingTracker:
                 self._birth_anchor_by_tid[gtid] = dict(row)
         return G_global, w_rows, all_events
 
-    def _evaluate_pending_audits(
-        self,
-        scan_idx: int,
-        window_rows: list[dict[str, Any]],
-        kin_by_tid: dict[int, GrainKinematics],
-        validity_epsilon: float,
-    ) -> list[SimToRealAuditRecord]:
-        """Evaluate FAL Eq. (4) $\\Delta_{\\text{gap}}$ for zoom predictions targeting ``scan_idx``."""
-        pending = self._pending_zoom_targets.pop(scan_idx, [])
-        if not pending:
-            return []
-
-        obs_at_scan = [r for r in window_rows if int(r["scan_idx"]) == scan_idx]
-        if not obs_at_scan:
-            return []
-
-        by_tid: dict[int, dict[str, Any]] = {int(r["track_id"]): r for r in obs_at_scan}
-        by_root: dict[int, list[dict[str, Any]]] = {}
-        for r in obs_at_scan:
-            tid = int(r["track_id"])
-            gk = kin_by_tid.get(tid)
-            rtid = int(gk.root_track_id) if gk is not None and gk.root_track_id > 0 else tid
-            by_root.setdefault(rtid, []).append(r)
-
-        records: list[SimToRealAuditRecord] = []
-        for tgt in pending:
-            matched_obs = by_tid.get(tgt.track_id)
-            if matched_obs is None:
-                cands = by_root.get(tgt.root_track_id, [])
-                if cands:
-                    pm, pc, pd = tgt.predicted_setpoint
-                    matched_obs = min(
-                        cands,
-                        key=lambda r: (
-                            (float(r["centroid_mu"]) - pm) ** 2
-                            + (float(r["centroid_chi"]) - pc) ** 2
-                            + (float(r["centroid_d"]) - pd) ** 2
-                        ),
-                    )
-            if matched_obs is None:
-                continue
-            obs_c = (
-                float(matched_obs["centroid_mu"]),
-                float(matched_obs["centroid_chi"]),
-                float(matched_obs["centroid_d"]),
-            )
-            d_gap, m2, in_95, in_valid = compute_sim_to_real_gap(
-                tgt.predicted_setpoint,
-                tgt.predictive_std,
-                obs_c,
-                validity_epsilon=validity_epsilon,
-            )
-            rec = SimToRealAuditRecord(
-                source_scan_idx=tgt.scan_idx,
-                eval_scan_idx=scan_idx,
-                track_id=tgt.track_id,
-                root_track_id=tgt.root_track_id,
-                execution_mode=tgt.execution_mode,
-                actuated=tgt.actuate,
-                hypothesis=tgt.hypothesis,
-                predicted_setpoint=tgt.predicted_setpoint,
-                predictive_std=tgt.predictive_std,
-                observed_centroid=obs_c,
-                scan_half_widths=tgt.scan_half_widths,
-                setpoint_hit=tgt.contains_point(*obs_c),
-                delta_gap=d_gap,
-                mahalanobis_sq=m2,
-                within_95pct_ci=in_95,
-                within_validity_domain=in_valid,
-            )
-            records.append(rec)
-            self._audit_records.append(rec)
-        return records
-
-    def step(
+    def tell(
         self,
         volume_or_path: np.ndarray | str | Path,
         *,
@@ -510,10 +410,9 @@ class CausalStreamingTracker:
         timestamp: str | None = None,
         stimulus: ScanStimulusPoint | None = None,
     ) -> StreamingStepResult:
-        """Ingest one new 3D scan ``t`` causally and emit tracking + FAL Level 3 zoom targets."""
+        """Ingest one new 3D scan ``t`` and update causal tracking, kinematics, and precursors."""
         t0 = time.perf_counter()
         scan_idx = len(self._scan_tables)
-        odd = self.trigger_policy.resolved_odd()
 
         vol, raw_thr, resolved_name, resolved_ts, active_cal = self._resolve_volume_and_meta(
             volume_or_path, scan_name, timestamp
@@ -521,29 +420,16 @@ class CausalStreamingTracker:
         if stimulus is not None and resolved_ts is None and stimulus.timestamp is not None:
             resolved_ts = stimulus.timestamp
 
-        # Upstream instrument health W(s_t) & ODD environment verification
-        health = self._compute_instrument_health(vol, min_health=odd.min_instrument_health)
-        env_ok, violations = odd.check_sample_environment(stimulus)
-        if health < odd.min_instrument_health:
-            violations.append(f"instrument_health_low={health:.3f}<{odd.min_instrument_health:.3f}")
+        beam_ok = self._check_beam_flux(vol)
+        self._last_beam_ok = beam_ok
+        self._last_active_cal = active_cal
 
-        prev_lat_ok, _ = odd.evaluate_latency_budget(self._last_step_latency_sec)
-        if not env_ok or health < odd.min_instrument_health:
-            fal_active: FALActiveLevel = "L1_halt"
-        elif not prev_lat_ok:
-            fal_active = "L2_fallback"
-            violations.append(f"prev_step_latency_exceeded={self._last_step_latency_sec:.3f}s")
-        else:
-            fal_active = "L3"
-
-        # 1. Strictly causal trailing-window Otsu threshold (scans max(0, t - W + 1) .. t only!)
-        if health >= odd.min_instrument_health or not self._raw_thresholds:
+        if beam_ok or not self._raw_thresholds:
             self._raw_thresholds.append(raw_thr)
         win_lo = max(0, len(self._raw_thresholds) - self.smooth_window)
         causal_thr = float(np.median(self._raw_thresholds[win_lo:]))
         self._causal_thresholds.append(causal_thr)
 
-        # 2. Classical 3D LoG + watershed segmentation & calibrated feature + kurtosis extraction
         seg = segment_classical(
             vol,
             threshold=causal_thr,
@@ -551,15 +437,8 @@ class CausalStreamingTracker:
             seed_response_percentile=self.seed_response_percentile,
         )
         labels = relabel_sequential(remove_small_objects(seg.labeled_volume, min_size=self.min_spot_voxels))
-        spots = (
-            extract_instance_table(labels, vol, calibration=active_cal) if health >= odd.min_instrument_health else []
-        )
+        spots = extract_instance_table(labels, vol, calibration=active_cal) if beam_ok else []
 
-        # Calibrate BulkReferencePrior on first nominal scan if not explicitly supplied
-        if self._reference_prior is None and spots and health >= odd.min_instrument_health:
-            self._reference_prior = BulkReferencePrior.from_spots(spots)
-
-        # 3. Batched DINOv2 multiview embeddings for all spots in scan t
         if self._multiview_encoder is not None and spots:
             triplets: list[tuple[np.ndarray, np.ndarray, np.ndarray]] = []
             for row in spots:
@@ -584,17 +463,13 @@ class CausalStreamingTracker:
             if stimulus.elapsed_s is not None and math.isfinite(stimulus.elapsed_s):
                 self._scan_elapsed_s[scan_idx] = float(stimulus.elapsed_s)
 
-        # 4. Build bounded O(1) sliding-window causal trajectory DAG
         G, w_rows, lineage_events = self._build_window_dag(scan_idx)
         new_events = [ev for ev in lineage_events if ev.scan_idx_to == scan_idx]
 
-        # Prepend lightweight historical birth/ancestor anchors for exact root-referenced strain in O(W)
         win_min_scan = min((int(r["scan_idx"]) for r in w_rows), default=scan_idx)
         anchor_rows: list[dict[str, Any]] = []
         if win_min_scan > 0:
-            needed_tids = {int(r["track_id"]) for r in w_rows}
-            # Walk parent links in _birth_anchor_by_tid to include root ancestors
-            queue = list(needed_tids)
+            queue = list({int(r["track_id"]) for r in w_rows})
             visited_anc: set[int] = set()
             while queue:
                 cur_t = queue.pop()
@@ -617,22 +492,11 @@ class CausalStreamingTracker:
                         if pt not in visited_anc:
                             queue.append(pt)
 
-        kin_input = [*anchor_rows, *w_rows]
         kin_list = compute_grain_kinematics(
-            kin_input,
+            [*anchor_rows, *w_rows],
             scan_elapsed_s=self._scan_elapsed_s if self._scan_elapsed_s else None,
         )
-        kin_by_tid = {k.track_id: k for k in kin_list}
 
-        # Evaluate FAL Eq. (4) Sim-to-Real Gap for previous zoom targets scheduled for scan_idx
-        step_audits = self._evaluate_pending_audits(
-            scan_idx,
-            w_rows,
-            kin_by_tid,
-            validity_epsilon=odd.validity_epsilon,
-        )
-
-        # 5. Compute incremental ROI-cached fracture precursors over active window (O(W))
         prec_candidates, obs_scores = compute_fracture_precursors(
             w_rows,
             self.precursor_config,
@@ -644,39 +508,15 @@ class CausalStreamingTracker:
             batch_size=self.batch_size,
         )
 
-        # 6. Select and extrapolate autonomous DFXM zoom targets at scan t
-        zoom_targets = select_zoom_targets(
-            current_scan_idx=scan_idx,
-            scan_name=resolved_name,
-            track_table=w_rows,
-            kinematics=kin_list,
-            obs_precursor_scores=obs_scores,
-            policy=self.trigger_policy,
-            calibration=active_cal,
-            detector=self.detector,
-            stimulus=stimulus,
-            last_triggered_scan_by_lineage=self._cooldown_by_lineage,
-            zoom_counts_by_lineage=self._zoom_counts_by_lineage,
-            reference_prior=self._reference_prior,
-            instrument_health=health,
-            fal_level=fal_active,
-        )
-
-        if zoom_targets:
-            eval_offset = max(1, round(float(self.trigger_policy.lead_scans)))
-            self._pending_zoom_targets.setdefault(scan_idx + eval_offset, []).extend(zoom_targets)
-
         self._graph = G
         self._window_rows = w_rows
         self._kinematics = kin_list
         self._obs_precursor_scores = obs_scores
         self._precursor_candidates = prec_candidates
-        self._all_zoom_targets.extend(zoom_targets)
 
         n_active = sum(1 for row in w_rows if int(row["scan_idx"]) == scan_idx)
         dt = time.perf_counter() - t0
-        self._last_step_latency_sec = dt
-        within_lat, _ = odd.evaluate_latency_budget(dt)
+        self._step_latencies.append(dt)
 
         return StreamingStepResult(
             scan_idx=scan_idx,
@@ -688,12 +528,101 @@ class CausalStreamingTracker:
             n_lineage_events_total=len(lineage_events),
             new_lineage_events=new_events,
             precursor_candidates=prec_candidates,
-            zoom_targets=zoom_targets,
+            zoom_targets=[],
             step_latency_sec=dt,
             stimulus=stimulus,
-            instrument_health=health,
-            fal_level_active=fal_active,
-            within_latency_budget=within_lat,
-            odd_violations=tuple(violations),
-            audit_records=step_audits,
+            beam_ok=beam_ok,
         )
+
+    def ask(
+        self,
+        n: int | None = None,
+        *,
+        acquisition: AcquisitionKind | None = None,
+        commit: bool = True,
+    ) -> list[ZoomTarget]:
+        """Query the GP surrogate and Bayesian acquisition policy for top ``n`` DFXM zoom targets."""
+        if not self._scan_tables:
+            return []
+        scan_idx = len(self._scan_tables) - 1
+        targets = select_zoom_targets(
+            current_scan_idx=scan_idx,
+            scan_name=self._scan_names[scan_idx],
+            track_table=self._window_rows,
+            kinematics=self._kinematics,
+            obs_precursor_scores=self._obs_precursor_scores,
+            policy=self.trigger_policy,
+            acquisition_override=acquisition,
+            max_targets_override=n,
+            calibration=self._last_active_cal,
+            detector=self.detector,
+            stimulus=self._stimuli.get(scan_idx),
+            scan_elapsed_s=self._scan_elapsed_s if self._scan_elapsed_s else None,
+            last_triggered_scan_by_lineage=self._cooldown_by_lineage,
+            zoom_counts_by_lineage=self._zoom_counts_by_lineage,
+            zoom_outcomes=self._zoom_outcomes,
+            beam_ok=self._last_beam_ok,
+            commit=commit,
+        )
+        if commit and targets:
+            self._all_zoom_targets.extend(targets)
+        return targets
+
+    def tell_zoom_outcome(self, track_id: int, outcome: float) -> None:
+        """Record a measured high-resolution DFXM zoom scalar (e.g. ``darfix`` mosaicity) for GP conditioning."""
+        kin_by_tid = {k.track_id: k for k in self._kinematics}
+        kin = kin_by_tid.get(int(track_id))
+        if kin is None or not kin.scan_indices:
+            return
+        pos = len(kin.scan_indices) - 1
+        root_tid = int(kin.root_track_id) if kin.root_track_id > 0 else int(track_id)
+        l_strain = float(kin.lineage_strain[pos]) if len(kin.lineage_strain) > pos else float(kin.strain[pos])
+        s_rate = float(kin.strain_rate[pos]) if len(kin.strain_rate) > pos else 0.0
+        aniso = float(kin.anisotropy[pos]) if len(kin.anisotropy) > pos else 1.0
+
+        sc_matching = [s for s in self._obs_precursor_scores if s.track_id == int(track_id)]
+        prec_score = float(sc_matching[-1].precursor_score) if sc_matching else 0.0
+        subpeaks = int(sc_matching[-1].roi_subpeak_count) if sc_matching else 1
+
+        f_vec = np.array(
+            [
+                abs(l_strain),
+                abs(s_rate),
+                math.log1p(max(0.0, aniso - 1.0)),
+                float(max(0, subpeaks - 1)),
+                prec_score,
+            ],
+            dtype=np.float64,
+        )
+        self._zoom_outcomes[root_tid] = (f_vec, float(outcome))
+
+    def report(self) -> dict[str, Any]:
+        """Return a concise ``Bluesky-Adaptive`` style status summary of the streaming agent."""
+        scan_idx = len(self._scan_tables) - 1
+        n_active = sum(1 for row in self._window_rows if int(row["scan_idx"]) == scan_idx) if scan_idx >= 0 else 0
+        return {
+            "n_scans_processed": len(self._scan_tables),
+            "n_active_tracks": n_active,
+            "n_zoom_targets_emitted": len(self._all_zoom_targets),
+            "n_zoom_outcomes_recorded": len(self._zoom_outcomes),
+            "acquisition": self.trigger_policy.acquisition,
+            "execution_mode": self.trigger_policy.execution_mode,
+            "beam_ok": self._last_beam_ok,
+            "mean_step_latency_sec": round(float(np.mean(self._step_latencies)), 4) if self._step_latencies else 0.0,
+        }
+
+    def step(
+        self,
+        volume_or_path: np.ndarray | str | Path,
+        *,
+        scan_name: str | None = None,
+        timestamp: str | None = None,
+        stimulus: ScanStimulusPoint | None = None,
+    ) -> StreamingStepResult:
+        """Convenience wrapper executing ``tell(volume_or_path, ...)`` followed by ``ask()``."""
+        t0 = time.perf_counter()
+        tell_res = self.tell(volume_or_path, scan_name=scan_name, timestamp=timestamp, stimulus=stimulus)
+        targets = self.ask(commit=True)
+        total_dt = time.perf_counter() - t0
+        self._step_latencies[-1] = total_dt
+        return replace(tell_res, zoom_targets=targets, step_latency_sec=total_dt)

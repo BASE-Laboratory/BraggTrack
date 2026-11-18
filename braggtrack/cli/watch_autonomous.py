@@ -1,4 +1,4 @@
-"""Autonomous DFXM "Scout-and-Zoom" beamline watcher, FAL Staged Certification, and causal replay CLI."""
+"""Autonomous DFXM "Scout-and-Zoom" beamline watcher and causal replay CLI."""
 
 from __future__ import annotations
 
@@ -9,7 +9,6 @@ from pathlib import Path
 
 from braggtrack.autonomous import (
     CausalStreamingTracker,
-    OperationalDesignDomain,
     ZoomTriggerPolicy,
     evaluate_causal_replay,
 )
@@ -38,13 +37,19 @@ def build_parser() -> argparse.ArgumentParser:
         "--mode",
         choices=("replay", "shadow", "watch", "active"),
         default="replay",
-        help="FAL certification stage: 'replay' (offline), 'shadow'/'watch' (live non-actuating), or 'active' (closed-loop)",
+        help="Execution mode: 'replay' (offline), 'shadow'/'watch' (live non-actuating), or 'active' (closed-loop)",
     )
     parser.add_argument(
-        "--hypothesis",
-        choices=("mechanical_fracture", "phase_nucleation", "intragranular_disorder"),
-        default="mechanical_fracture",
-        help="FAL Level 3 experimental hypothesis governing heuristic target prioritization",
+        "--acquisition",
+        choices=("ucb", "ei", "max_variance"),
+        default="ucb",
+        help="Bayesian GP acquisition function for candidate DFXM zoom ranking (default: ucb)",
+    )
+    parser.add_argument(
+        "--ucb-beta",
+        type=float,
+        default=1.96,
+        help="Exploration weight beta for Upper Confidence Bound (ucb) acquisition (default: 1.96)",
     )
     parser.add_argument("--outdir", default="artifacts/autonomous", help="Output directory for zoom triggers & logs")
     parser.add_argument(
@@ -65,7 +70,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--min-persistence", type=int, default=2, help="Required contiguous precursor scans")
     parser.add_argument("--cooldown-scans", type=int, default=3, help="Per-lineage cooldown scans after firing")
     parser.add_argument("--max-triggers-per-scan", type=int, default=2, help="Maximum zoom targets emitted per scan")
-    parser.add_argument("--lead-scans", type=float, default=1.0, help="Velocity extrapolation lead (in scan steps)")
+    parser.add_argument("--lead-scans", type=float, default=1.0, help="GP forecast lead (in scan steps)")
     parser.add_argument("--window-sigma", type=float, default=3.5, help="Scan half-width sigma multiplier")
     parser.add_argument(
         "--mu-bounds",
@@ -73,7 +78,7 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=None,
         metavar=("MIN", "MAX"),
-        help="Optional ODD motor soft-limits for rocking angle mu",
+        help="Optional diffractometer soft-limits for rocking angle mu",
     )
     parser.add_argument(
         "--chi-bounds",
@@ -81,7 +86,7 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=None,
         metavar=("MIN", "MAX"),
-        help="Optional ODD motor soft-limits for roll angle chi",
+        help="Optional diffractometer soft-limits for roll angle chi",
     )
     parser.add_argument(
         "--d-bounds",
@@ -89,7 +94,7 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=None,
         metavar=("MIN", "MAX"),
-        help="Optional ODD motor soft-limits for d / 2theta / obpitch",
+        help="Optional diffractometer soft-limits for d / 2theta / obpitch",
     )
     parser.add_argument(
         "--voltage-bounds",
@@ -97,19 +102,13 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=None,
         metavar=("V_MIN", "V_MAX"),
-        help="Optional ODD electrochemical voltage window (V); halts actuation on excursion",
+        help="Optional electrochemical voltage safety window (V); pauses zoom triggers outside range",
     )
     parser.add_argument(
         "--max-zooms-per-lineage",
         type=int,
         default=None,
-        help="Optional ODD per-grain maximum high-res zoom count to cap X-ray dose",
-    )
-    parser.add_argument(
-        "--scan-cadence-sec",
-        type=float,
-        default=None,
-        help="Expected beamline scan cadence t_decision (s) for FAL latency budget verification",
+        help="Optional per-grain maximum high-res zoom count to cap X-ray dose",
     )
     parser.add_argument(
         "--sliding-window",
@@ -188,16 +187,6 @@ def main(argv: list[str] | None = None) -> int:
         score_threshold=float(args.min_precursor_score),
         min_persistence=int(args.min_persistence),
     )
-    odd = OperationalDesignDomain(
-        mu_bounds=(float(args.mu_bounds[0]), float(args.mu_bounds[1])) if args.mu_bounds else None,
-        chi_bounds=(float(args.chi_bounds[0]), float(args.chi_bounds[1])) if args.chi_bounds else None,
-        d_bounds=(float(args.d_bounds[0]), float(args.d_bounds[1])) if args.d_bounds else None,
-        voltage_bounds_v=(float(args.voltage_bounds[0]), float(args.voltage_bounds[1]))
-        if args.voltage_bounds
-        else None,
-        max_zooms_per_lineage=args.max_zooms_per_lineage,
-        scan_cadence_sec=args.scan_cadence_sec,
-    )
     policy = ZoomTriggerPolicy(
         min_precursor_score=float(args.min_precursor_score),
         min_persistence=int(args.min_persistence),
@@ -205,13 +194,19 @@ def main(argv: list[str] | None = None) -> int:
         max_triggers_per_scan=int(args.max_triggers_per_scan),
         lead_scans=float(args.lead_scans),
         window_sigma=float(args.window_sigma),
-        hypothesis=args.hypothesis,
+        acquisition=args.acquisition,
+        ucb_beta=float(args.ucb_beta),
         execution_mode=args.mode,
-        odd=odd,
+        mu_bounds=(float(args.mu_bounds[0]), float(args.mu_bounds[1])) if args.mu_bounds else None,
+        chi_bounds=(float(args.chi_bounds[0]), float(args.chi_bounds[1])) if args.chi_bounds else None,
+        d_bounds=(float(args.d_bounds[0]), float(args.d_bounds[1])) if args.d_bounds else None,
+        voltage_bounds_v=(float(args.voltage_bounds[0]), float(args.voltage_bounds[1]))
+        if args.voltage_bounds
+        else None,
+        max_zooms_per_lineage=args.max_zooms_per_lineage,
     )
 
     triggers_jsonl = outdir / "zoom_triggers.jsonl"
-    audit_jsonl = outdir / "audit_trajectory.jsonl"
     steps_json = outdir / "autonomous_steps.json"
 
     if args.mode == "replay":
@@ -245,21 +240,15 @@ def main(argv: list[str] | None = None) -> int:
             for tgt in bench.zoom_targets:
                 fh.write(json.dumps(tgt.to_bliss_command()) + "\n")
 
-        with audit_jsonl.open("w", encoding="utf-8") as fh:
-            for rec in bench.audit_records:
-                fh.write(json.dumps(rec.to_dict()) + "\n")
-
         steps_json.write_text(json.dumps([s.to_dict() for s in bench.steps], indent=2), encoding="utf-8")
         summary_path = outdir / "replay_summary.json"
         summary_path.write_text(json.dumps(bench.to_dict(), indent=2), encoding="utf-8")
 
         bt_m = bench.policy_comparison["braggtrack_autonomous"]
-        gap_msg = (
-            f", mean Delta_gap={bench.mean_sim_to_real_gap:+.3f}" if bench.mean_sim_to_real_gap is not None else ""
-        )
         print(
             f"[braggtrack-watch:replay] Processed {bench.n_scans} scans "
-            f"(mean {bench.mean_step_latency_sec:.3f}s/scan) -> {len(bench.zoom_targets)} zoom trigger(s){gap_msg}"
+            f"(mean {bench.mean_step_latency_sec:.3f}s/scan, acq={args.acquisition}) -> "
+            f"{len(bench.zoom_targets)} zoom trigger(s)"
         )
         print(
             f"  Fracture capture recall={bt_m.fracture_capture_recall:.2f}, "
@@ -269,7 +258,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 0
 
-    # Live directory polling modes: "shadow", "watch" (non-actuating), or "active" (FAL Level 3 actuation)
+    # Live directory polling modes: "shadow", "watch" (non-actuating), or "active" (closed-loop)
     tracker = CausalStreamingTracker(
         backend=args.backend,
         model_name=args.model,
@@ -285,7 +274,6 @@ def main(argv: list[str] | None = None) -> int:
     idle_polls = 0
 
     triggers_jsonl.write_text("", encoding="utf-8")
-    audit_jsonl.write_text("", encoding="utf-8")
     while True:
         try:
             seq = BeamlineAdapter(root).build_sequence()
@@ -326,15 +314,10 @@ def main(argv: list[str] | None = None) -> int:
                     for tgt in res.zoom_targets:
                         fh.write(json.dumps(tgt.to_bliss_command()) + "\n")
                     fh.flush()
-            if res.audit_records:
-                with audit_jsonl.open("a", encoding="utf-8") as fh:
-                    for rec in res.audit_records:
-                        fh.write(json.dumps(rec.to_dict()) + "\n")
-                    fh.flush()
             steps_json.write_text(json.dumps(step_dicts, indent=2), encoding="utf-8")
             print(
                 f"[braggtrack-watch:{args.mode}] scan={res.scan_name} spots={res.n_spots} "
-                f"fal={res.fal_level_active} zoom_triggers={len(res.zoom_targets)} ({res.step_latency_sec:.3f}s)"
+                f"beam_ok={res.beam_ok} zoom_triggers={len(res.zoom_targets)} ({res.step_latency_sec:.3f}s)"
             )
             if args.max_scans is not None and tracker.n_scans_processed >= int(args.max_scans):
                 return 0

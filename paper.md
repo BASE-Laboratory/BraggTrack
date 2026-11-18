@@ -200,27 +200,29 @@ bimodality, and batched foreground DINO patch-token cosine dispersion.
 
 ![Four-dimensional chemomechanical fracture lineage, pre-split bimodal MIP evolution, persistent precursor decomposition (`facebook/dinov2-small`), and calibrated ESRF-ID03 Ni-rich cathode per-grain strain trajectories.\label{fig:lineage}](docs/figures/fracture_lineage_and_precursors.png)
 
-## FAL Level 3 causal streaming and autonomous "Scout-and-Zoom" DFXM targeting
+## Causal streaming, Gaussian process forecasting, and autonomous DFXM targeting
 
-Within the Facility Autonomy Levels (FAL) taxonomy [@LeHouxFAL2026],
-`braggtrack.autonomous` (`CausalStreamingTracker` and `braggtrack-watch`)
-operates at **FAL Level 3 (Conditional Heuristic Autonomy)** — crossing the
-*Inference Barrier* by acting on inferred crystallographic sample state
-evaluated against calibrated bulk reference priors (`BulkReferencePrior`) and
-frozen foundation-model embeddings (`DINOv2`), with decisions conditioned on the
-declared scientific hypothesis (`--hypothesis {mechanical_fracture,
-phase_nucleation, intragranular_disorder}`). Bounded $O(1)$ sliding-window DAG
-updates maintain sub-second per-scan latency ($\tau_{\text{loop}} \le
-t_{\text{decision}} / \kappa$) across `1,000+` scan operando campaigns, while an
-explicit `OperationalDesignDomain` enforces motor soft-limits, sample
-electrochemical voltage/temperature bounds, per-lineage X-ray dose caps, and
-upstream beam-flux health weighting $D(x) = H(x)\mathcal{W}(\mathbf{s}_t)$ to
-suppress false triggers during synchrotron beam dumps. Staged certification
-modes (`replay`, non-actuating live `shadow`, and closed-loop `active`) emit
-velocity-extrapolated `bliss_dfxm_zoom.v1` JSONL commands (`zoom_triggers.jsonl`)
-alongside an immutable Sim-to-Real Gap trajectory audit log
-(`audit_trajectory.jsonl`, computing closed-form differential-entropy-normalized
-Gaussian surprise $\Delta_{\text{gap}}$) and baseline replay benchmarks
+Building on Gaussian process and Bayesian active-learning architectures established
+across synchrotron, neutron, and microscopy user facilities [@Noack2021;
+@McDannald2022; @Kalinin2021; @Szymanski2023], `braggtrack.autonomous`
+(`CausalStreamingTracker` and `braggtrack-watch`) adopts the decoupled
+`tell` / `ask` / `report` agent interface standardized by `Bluesky-Adaptive`
+[@Maffettone2023]. Bounded $O(1)$ sliding-window DAG updates (`tell`) maintain
+sub-second per-scan latency across `1,000+` scan operando campaigns without
+future lookahead. During rapid electrochemical phase transitions (`H2 -> H3`),
+`forecast_grain_trajectory_gp` combines inverse-variance-weighted linear trend
+estimation with a heteroscedastic `Matérn-3/2` Gaussian process weighted by
+analytical Poisson centroid variances ($\alpha_i = \sigma_{\text{pos},i}^2$) to
+forecast smooth $(\mu, \chi, d)$ setpoints and posterior `1-sigma` rocking-window
+widths across uniform or irregular scan timestamps. Candidate grains are ranked
+(`ask`) via Upper Confidence Bound (`ucb`), Expected Improvement (`ei`), or pure
+variance exploration (`max_variance`), with optional closed-loop conditioning on
+high-resolution DFXM zoom outcomes (`tell_zoom_outcome`). Within the Facility
+Autonomy Levels taxonomy [@LeHouxFAL2026; @Lu2025], `braggtrack-watch` supports
+staged `replay`, live non-actuating `shadow`, and `active` closed-loop operation
+under diffractometer soft limits, electrochemical voltage bounds, per-grain X-ray
+dose caps, and synchrotron beam-dump suppression, emitting `bliss_dfxm_zoom.v1`
+JSONL commands (`zoom_triggers.jsonl`) and baseline replay benchmarks
 (`evaluate_causal_replay`).
 
 ## Quantitative evaluation, visualization, and reproducibility

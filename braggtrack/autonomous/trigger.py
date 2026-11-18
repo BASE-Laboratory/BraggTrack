@@ -1,27 +1,20 @@
-"""Autonomous DFXM "Scout-and-Zoom" trigger policy and BLISS/Ewoks setpoint extrusion.
+"""Autonomous DFXM "Scout-and-Zoom" trigger policy, GP setpoint forecasting, and BLISS output.
 
 Evaluates active tracked reflections at scan ``t`` using strictly causal kinematics,
-analytical centroid uncertainties, standardized rocking-curve excess kurtosis $g_2$,
-calibrated bulk reference priors, and multi-scan fracture precursor persistence to
-select high-priority candidate grains for zoomed Dark-Field X-ray Microscopy (DFXM)
-acquisitions at Facility Autonomy Level 3 (FAL L3). Motor setpoints are velocity-extrapolated
-to ``t + lead_scans`` and clamped to an explicit :class:`OperationalDesignDomain`.
+heteroscedastic Gaussian Process (GP) trajectory forecasting (:mod:`braggtrack.autonomous.gp`),
+and standard Bayesian acquisition functions (``ucb``, ``ei``, ``max_variance``) to select
+high-priority candidate grains for zoomed Dark-Field X-ray Microscopy (DFXM) acquisitions.
 """
 
 from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
-from .odd import (
-    BulkReferencePrior,
-    ExecutionMode,
-    FALActiveLevel,
-    HypothesisMode,
-    OperationalDesignDomain,
-    spot_kurtosis_non_gaussianity,
-)
+import numpy as np
+
+from .gp import AcquisitionKind, forecast_grain_trajectory_gp, score_candidates_gp
 
 if TYPE_CHECKING:
     from braggtrack.io.crystallography import DetectorGeometry
@@ -30,10 +23,50 @@ if TYPE_CHECKING:
     from braggtrack.tracking.kinematics import GrainKinematics
     from braggtrack.tracking.precursors import ObservationPrecursorScore
 
+ExecutionMode = Literal["replay", "shadow", "watch", "active"]
+
+
+def clamp_setpoint_bounds(
+    pred: tuple[float, float, float],
+    half_widths: tuple[float, float, float],
+    *,
+    mu_bounds: tuple[float, float] | None = None,
+    chi_bounds: tuple[float, float] | None = None,
+    d_bounds: tuple[float, float] | None = None,
+) -> tuple[tuple[float, float, float], tuple[float, float, float], bool]:
+    """Clamp ``(mu, chi, d)`` setpoints and scan intervals to diffractometer soft limits."""
+    pm, pc, pd = pred
+    hm, hc, hd = half_widths
+    clamped = False
+
+    def _clamp_axis(val: float, hw: float, bounds: tuple[float, float] | None) -> tuple[float, float]:
+        nonlocal clamped
+        if bounds is None:
+            return val, hw
+        lo, hi = min(bounds[0], bounds[1]), max(bounds[0], bounds[1])
+        new_val = min(max(val, lo), hi)
+        if abs(new_val - val) > 1e-12:
+            clamped = True
+        max_span_half = 0.5 * (hi - lo)
+        new_hw = min(hw, max_span_half)
+        if new_val - new_hw < lo - 1e-12:
+            new_val = lo + new_hw
+            clamped = True
+        if new_val + new_hw > hi + 1e-12:
+            new_val = hi - new_hw
+            clamped = True
+        new_val = min(max(new_val, lo), hi)
+        return new_val, max(0.0, new_hw)
+
+    pm, hm = _clamp_axis(pm, hm, mu_bounds)
+    pc, hc = _clamp_axis(pc, hc, chi_bounds)
+    pd, hd = _clamp_axis(pd, hd, d_bounds)
+    return (pm, pc, pd), (hm, hc, hd), clamped
+
 
 @dataclass(frozen=True)
 class ZoomTriggerPolicy:
-    """Decision thresholds, hypothesis mode, ODD bounds, and window geometry for FAL Level 3 zoom."""
+    """Bayesian acquisition settings, thresholds, and practical safety bounds for DFXM zoom."""
 
     min_precursor_score: float = 0.40
     min_persistence: int = 2
@@ -47,38 +80,19 @@ class ZoomTriggerPolicy:
     lead_scans: float = 1.0
     window_sigma: float = 3.5
     exclude_post_split_daughters: bool = True
-    hypothesis: HypothesisMode = "mechanical_fracture"
+    acquisition: AcquisitionKind = "ucb"
+    ucb_beta: float = 1.96
+    ei_xi: float = 0.01
+    use_gp_extrapolation: bool = True
     execution_mode: ExecutionMode = "replay"
-    odd: OperationalDesignDomain | None = None
     mu_bounds: tuple[float, float] | None = None
     chi_bounds: tuple[float, float] | None = None
     d_bounds: tuple[float, float] | None = None
+    voltage_bounds_v: tuple[float, float] | None = None
+    max_zooms_per_lineage: int | None = None
     max_extrapolation_steps: float = 12.0
+    min_beam_fraction: float = 0.20
     exclude_border_truncated: bool = False
-    border_truncation_penalty: float = 0.65
-
-    def resolved_odd(self) -> OperationalDesignDomain:
-        """Return effective :class:`OperationalDesignDomain` merging policy-level motor overrides."""
-        if self.odd is not None:
-            return OperationalDesignDomain(
-                mu_bounds=self.mu_bounds if self.mu_bounds is not None else self.odd.mu_bounds,
-                chi_bounds=self.chi_bounds if self.chi_bounds is not None else self.odd.chi_bounds,
-                d_bounds=self.d_bounds if self.d_bounds is not None else self.odd.d_bounds,
-                max_extrapolation_steps=self.odd.max_extrapolation_steps,
-                voltage_bounds_v=self.odd.voltage_bounds_v,
-                temperature_bounds_c=self.odd.temperature_bounds_c,
-                max_zooms_per_lineage=self.odd.max_zooms_per_lineage,
-                scan_cadence_sec=self.odd.scan_cadence_sec,
-                latency_safety_factor_kappa=self.odd.latency_safety_factor_kappa,
-                min_instrument_health=self.odd.min_instrument_health,
-                validity_epsilon=self.odd.validity_epsilon,
-            )
-        return OperationalDesignDomain(
-            mu_bounds=self.mu_bounds,
-            chi_bounds=self.chi_bounds,
-            d_bounds=self.d_bounds,
-            max_extrapolation_steps=self.max_extrapolation_steps,
-        )
 
 
 @dataclass(frozen=True)
@@ -108,13 +122,11 @@ class ZoomTarget:
     scattering_angles: dict[str, float] | None = None
     operando_state: dict[str, Any] | None = None
     predictive_std: tuple[float, float, float] = (0.0, 0.0, 0.0)
-    kurtosis_non_gaussianity: float = 0.0
-    discovery_potential: float = 0.0
-    instrument_health: float = 1.0
-    hypothesis: HypothesisMode = "mechanical_fracture"
+    acquisition_kind: AcquisitionKind = "ucb"
+    gp_posterior_mean: float = 0.0
+    gp_posterior_std: float = 0.0
     execution_mode: ExecutionMode = "replay"
     actuate: bool = False
-    fal_level: FALActiveLevel = "L3"
 
     def contains_point(self, mu: float, chi: float, d: float) -> bool:
         """Return True if ``(mu, chi, d)`` lies inside ``predicted_setpoint ± scan_half_widths``."""
@@ -123,26 +135,23 @@ class ZoomTarget:
         return abs(mu - pm) <= hm and abs(chi - pc) <= hc and abs(d - pd) <= hd
 
     def to_bliss_command(self) -> dict[str, Any]:
-        """Format as an ESRF BLISS / Ewoks machine-readable DFXM zoom command payload."""
+        """Format as an ESRF BLISS / Ewoks / Bluesky machine-readable DFXM zoom command payload."""
         pm, pc, pd = self.predicted_setpoint
         hm, hc, hd = self.scan_half_widths
         em, ec, ed = self.centroid_err
         sm, sc, sd = self.predictive_std
-        disc = self.discovery_potential if self.discovery_potential > 0.0 else self.priority_score
         cmd: dict[str, Any] = {
             "schema_version": "bliss_dfxm_zoom.v1",
             "action": "dfxm_high_res_zoom",
             "actuate": bool(self.actuate),
             "execution_mode": self.execution_mode,
-            "fal_level": self.fal_level,
-            "hypothesis": self.hypothesis,
+            "acquisition": self.acquisition_kind,
             "source_scan_idx": int(self.scan_idx),
             "source_scan_name": self.scan_name,
             "track_id": int(self.track_id),
             "root_track_id": int(self.root_track_id),
             "priority_rank": int(self.priority_rank),
             "priority_score": round(float(self.priority_score), 4),
-            "discovery_potential": round(float(disc), 4),
             "lead_scans": round(float(self.lead_scans), 3),
             "target_motors": {
                 "mu": round(float(pm), 6),
@@ -163,19 +172,19 @@ class ZoomTarget:
                 "centroid_mu_err": round(float(em), 6),
                 "centroid_chi_err": round(float(ec), 6),
                 "centroid_d_err": round(float(ed), 6),
-                "predictive_mu_std": round(float(sm), 6),
-                "predictive_chi_std": round(float(sc), 6),
-                "predictive_d_std": round(float(sd), 6),
+                "gp_predictive_mu_std": round(float(sm), 6),
+                "gp_predictive_chi_std": round(float(sc), 6),
+                "gp_predictive_d_std": round(float(sd), 6),
                 "strain_err": round(float(self.strain_err), 7),
             },
             "diagnostics": {
                 "current_centroid": [round(float(x), 6) for x in self.current_centroid],
+                "gp_posterior_mean": round(float(self.gp_posterior_mean), 4),
+                "gp_posterior_std": round(float(self.gp_posterior_std), 4),
                 "precursor_score": round(float(self.precursor_score), 4),
                 "persistence_scans": int(self.persistence_scans),
                 "roi_subpeak_count": int(self.roi_subpeak_count),
                 "anisotropy": round(float(self.anisotropy), 4),
-                "kurtosis_non_gaussianity": round(float(self.kurtosis_non_gaussianity), 4),
-                "instrument_health": round(float(self.instrument_health), 4),
                 "lineage_strain": round(float(self.lineage_strain), 6),
                 "strain_rate": round(float(self.strain_rate), 6),
                 "assignment_margin": (
@@ -216,53 +225,6 @@ def _trailing_persistence(
     return run
 
 
-def compute_predictive_std(
-    obs: dict[str, Any],
-    kin: GrainKinematics | None,
-    obs_pos_in_kin: int,
-    *,
-    lead_scans: float = 1.0,
-    calibration: AxisCalibration | None = None,
-) -> tuple[float, float, float]:
-    """Compute 1-sigma predictive transition uncertainty $(\\sigma_{\\text{pred},\\mu}, \\sigma_{\\text{pred},\\chi}, \\sigma_{\\text{pred},d})$."""
-    if kin is not None and 0 <= obs_pos_in_kin < len(kin.scan_indices):
-        v_mu = float(kin.rate_mu[obs_pos_in_kin]) if len(kin.rate_mu) > obs_pos_in_kin else 0.0
-        v_chi = float(kin.rate_chi[obs_pos_in_kin]) if len(kin.rate_chi) > obs_pos_in_kin else 0.0
-        v_d = float(kin.rate_d[obs_pos_in_kin]) if len(kin.rate_d) > obs_pos_in_kin else 0.0
-        err_mu = float(kin.centroid_mu_err[obs_pos_in_kin]) if len(kin.centroid_mu_err) > obs_pos_in_kin else 0.0
-        err_chi = float(kin.centroid_chi_err[obs_pos_in_kin]) if len(kin.centroid_chi_err) > obs_pos_in_kin else 0.0
-        err_d = float(kin.centroid_d_err[obs_pos_in_kin]) if len(kin.centroid_d_err) > obs_pos_in_kin else 0.0
-    else:
-        v_mu = v_chi = v_d = 0.0
-        err_mu = float(obs.get("centroid_mu_err", 0.0))
-        err_chi = float(obs.get("centroid_chi_err", 0.0))
-        err_d = float(obs.get("centroid_d_err", 0.0))
-
-    step_mu = abs(float(calibration.mu_step)) if calibration is not None else float(obs.get("step_mu", 1.0))
-    step_chi = abs(float(calibration.chi_step)) if calibration is not None else float(obs.get("step_chi", 1.0))
-    step_d = abs(float(calibration.d_step)) if calibration is not None else float(obs.get("step_d", 1.0))
-
-    std_mu = math.sqrt(max(float(obs.get("cov_zz", obs.get("cov_mu_mu", 0.0))), 0.0))
-    std_chi = math.sqrt(max(float(obs.get("cov_xx", obs.get("cov_chi_chi", 0.0))), 0.0))
-    std_d = math.sqrt(max(float(obs.get("cov_yy", obs.get("cov_d_d", 0.0))), 0.0))
-
-    # Propagated 1-step linear extrapolation variance + intragranular sub-domain spread + discretization floor
-    vel_factor_sq = 1.0 + 2.0 * (float(lead_scans) ** 2)
-    sig_mu = max(
-        math.sqrt(std_mu * std_mu + vel_factor_sq * err_mu * err_mu + (0.25 * lead_scans * v_mu) ** 2),
-        0.35 * max(step_mu, 1e-12),
-    )
-    sig_chi = max(
-        math.sqrt(std_chi * std_chi + vel_factor_sq * err_chi * err_chi + (0.25 * lead_scans * v_chi) ** 2),
-        0.35 * max(step_chi, 1e-12),
-    )
-    sig_d = max(
-        math.sqrt(std_d * std_d + vel_factor_sq * err_d * err_d + (0.25 * lead_scans * v_d) ** 2),
-        0.35 * max(step_d, 1e-12),
-    )
-    return (sig_mu, sig_chi, sig_d)
-
-
 def compute_target_geometry(
     obs: dict[str, Any],
     kin: GrainKinematics | None,
@@ -273,38 +235,95 @@ def compute_target_geometry(
     calibration: AxisCalibration | None = None,
     detector: DetectorGeometry | None = None,
     max_extrapolation_steps: float | None = None,
+    scan_elapsed_s: dict[int, float] | None = None,
+    use_gp: bool = True,
 ) -> tuple[
+    tuple[float, float, float],
     tuple[float, float, float],
     tuple[float, float, float],
     tuple[float, float, float],
     tuple[float, float, float],
     dict[str, float] | None,
 ]:
-    """Compute current centroid, velocity-extrapolated setpoint, half-widths, errors, and scattering angles."""
+    """Forecast ``(mu, chi, d)`` setpoint, scan half-widths, centroid errors, GP stds, and angles."""
     cur_mu = float(obs["centroid_mu"])
     cur_chi = float(obs["centroid_chi"])
     cur_d = float(obs["centroid_d"])
-
-    if kin is not None and 0 <= obs_pos_in_kin < len(kin.scan_indices):
-        v_mu = float(kin.rate_mu[obs_pos_in_kin]) if len(kin.rate_mu) > obs_pos_in_kin else 0.0
-        v_chi = float(kin.rate_chi[obs_pos_in_kin]) if len(kin.rate_chi) > obs_pos_in_kin else 0.0
-        v_d = float(kin.rate_d[obs_pos_in_kin]) if len(kin.rate_d) > obs_pos_in_kin else 0.0
-        err_mu = float(kin.centroid_mu_err[obs_pos_in_kin]) if len(kin.centroid_mu_err) > obs_pos_in_kin else 0.0
-        err_chi = float(kin.centroid_chi_err[obs_pos_in_kin]) if len(kin.centroid_chi_err) > obs_pos_in_kin else 0.0
-        err_d = float(kin.centroid_d_err[obs_pos_in_kin]) if len(kin.centroid_d_err) > obs_pos_in_kin else 0.0
-    else:
-        v_mu = v_chi = v_d = 0.0
-        err_mu = float(obs.get("centroid_mu_err", 0.0))
-        err_chi = float(obs.get("centroid_chi_err", 0.0))
-        err_d = float(obs.get("centroid_d_err", 0.0))
 
     step_mu = abs(float(calibration.mu_step)) if calibration is not None else float(obs.get("step_mu", 1.0))
     step_chi = abs(float(calibration.chi_step)) if calibration is not None else float(obs.get("step_chi", 1.0))
     step_d = abs(float(calibration.d_step)) if calibration is not None else float(obs.get("step_d", 1.0))
 
-    dm = lead_scans * v_mu
-    dc = lead_scans * v_chi
-    dd = lead_scans * v_d
+    if kin is not None and 0 <= obs_pos_in_kin < len(kin.scan_indices):
+        end = obs_pos_in_kin + 1
+        s_indices = kin.scan_indices[:end]
+        err_mu = float(kin.centroid_mu_err[obs_pos_in_kin]) if len(kin.centroid_mu_err) > obs_pos_in_kin else 0.0
+        err_chi = float(kin.centroid_chi_err[obs_pos_in_kin]) if len(kin.centroid_chi_err) > obs_pos_in_kin else 0.0
+        err_d = float(kin.centroid_d_err[obs_pos_in_kin]) if len(kin.centroid_d_err) > obs_pos_in_kin else 0.0
+
+        if use_gp and len(s_indices) >= 2:
+            if scan_elapsed_s and all(int(si) in scan_elapsed_s for si in s_indices):
+                t_hist = np.asarray([float(scan_elapsed_s[int(si)]) for si in s_indices], dtype=np.float64)
+                diffs = np.diff(t_hist)
+                dt_step = float(np.median(diffs[diffs > 0])) if np.any(diffs > 0) else 1.0
+            else:
+                t_hist = np.asarray(s_indices, dtype=np.float64)
+                dt_step = 1.0
+
+            target_t = float(t_hist[-1]) + float(lead_scans) * dt_step
+            e_mu = (
+                np.asarray(kin.centroid_mu_err[:end], dtype=np.float64)
+                if len(kin.centroid_mu_err) >= end
+                else np.zeros(end, dtype=np.float64)
+            )
+            e_chi = (
+                np.asarray(kin.centroid_chi_err[:end], dtype=np.float64)
+                if len(kin.centroid_chi_err) >= end
+                else np.zeros(end, dtype=np.float64)
+            )
+            e_d = (
+                np.asarray(kin.centroid_d_err[:end], dtype=np.float64)
+                if len(kin.centroid_d_err) >= end
+                else np.zeros(end, dtype=np.float64)
+            )
+            gp_out = forecast_grain_trajectory_gp(
+                t_hist,
+                np.asarray(kin.centroid_mu[:end], dtype=np.float64),
+                np.asarray(kin.centroid_chi[:end], dtype=np.float64),
+                np.asarray(kin.centroid_d[:end], dtype=np.float64),
+                e_mu,
+                e_chi,
+                e_d,
+                target_t,
+                step_floors=(step_mu, step_chi, step_d),
+            )
+            dm = gp_out.mean[0] - cur_mu
+            dc = gp_out.mean[1] - cur_chi
+            dd = gp_out.mean[2] - cur_d
+            gp_std = gp_out.std
+        else:
+            v_mu = float(kin.rate_mu[obs_pos_in_kin]) if len(kin.rate_mu) > obs_pos_in_kin else 0.0
+            v_chi = float(kin.rate_chi[obs_pos_in_kin]) if len(kin.rate_chi) > obs_pos_in_kin else 0.0
+            v_d = float(kin.rate_d[obs_pos_in_kin]) if len(kin.rate_d) > obs_pos_in_kin else 0.0
+            dm = float(lead_scans) * v_mu
+            dc = float(lead_scans) * v_chi
+            dd = float(lead_scans) * v_d
+            gp_std = (
+                max(err_mu, 0.35 * step_mu),
+                max(err_chi, 0.35 * step_chi),
+                max(err_d, 0.35 * step_d),
+            )
+    else:
+        err_mu = float(obs.get("centroid_mu_err", 0.0))
+        err_chi = float(obs.get("centroid_chi_err", 0.0))
+        err_d = float(obs.get("centroid_d_err", 0.0))
+        dm = dc = dd = 0.0
+        gp_std = (
+            max(err_mu, 0.35 * step_mu),
+            max(err_chi, 0.35 * step_chi),
+            max(err_d, 0.35 * step_d),
+        )
+
     if max_extrapolation_steps is not None and max_extrapolation_steps > 0.0:
         cap_m = float(max_extrapolation_steps) * max(step_mu, 1e-12)
         cap_c = float(max_extrapolation_steps) * max(step_chi, 1e-12)
@@ -321,14 +340,10 @@ def compute_target_geometry(
     std_chi = math.sqrt(max(float(obs.get("cov_xx", obs.get("cov_chi_chi", 0.0))), 0.0))
     std_d = math.sqrt(max(float(obs.get("cov_yy", obs.get("cov_d_d", 0.0))), 0.0))
 
-    # Half-width covers intragranular spread (window_sigma * std) + centroid + drift uncertainty, floored at 1.5 steps.
-    drift_pad_mu = 0.35 * abs(dm)
-    drift_pad_chi = 0.35 * abs(dc)
-    drift_pad_d = 0.35 * abs(dd)
-
-    half_mu = max(window_sigma * (std_mu + err_mu) + drift_pad_mu, 1.5 * step_mu)
-    half_chi = max(window_sigma * (std_chi + err_chi) + drift_pad_chi, 1.5 * step_chi)
-    half_d = max(window_sigma * (std_d + err_d) + drift_pad_d, 1.5 * step_d)
+    # Rocking window combines intrinsic reflection spread and GP posterior setpoint uncertainty
+    half_mu = max(window_sigma * math.sqrt(std_mu * std_mu + gp_std[0] * gp_std[0]), 1.5 * step_mu)
+    half_chi = max(window_sigma * math.sqrt(std_chi * std_chi + gp_std[1] * gp_std[1]), 1.5 * step_chi)
+    half_d = max(window_sigma * math.sqrt(std_d * std_d + gp_std[2] * gp_std[2]), 1.5 * step_d)
 
     scattering: dict[str, float] | None = None
     if detector is not None:
@@ -345,6 +360,7 @@ def compute_target_geometry(
         (pred_mu, pred_chi, pred_d),
         (half_mu, half_chi, half_d),
         (err_mu, err_chi, err_d),
+        gp_std,
         scattering,
     )
 
@@ -357,23 +373,36 @@ def select_zoom_targets(
     kinematics: list[GrainKinematics],
     obs_precursor_scores: list[ObservationPrecursorScore],
     policy: ZoomTriggerPolicy | None = None,
+    acquisition_override: AcquisitionKind | None = None,
+    max_targets_override: int | None = None,
     calibration: AxisCalibration | None = None,
     detector: DetectorGeometry | None = None,
     stimulus: ScanStimulusPoint | None = None,
+    scan_elapsed_s: dict[int, float] | None = None,
     last_triggered_scan_by_lineage: dict[int, int] | None = None,
     zoom_counts_by_lineage: dict[int, int] | None = None,
-    reference_prior: BulkReferencePrior | None = None,
-    instrument_health: float = 1.0,
-    fal_level: FALActiveLevel = "L3",
+    zoom_outcomes: dict[int, tuple[np.ndarray, float]] | None = None,
+    beam_ok: bool = True,
+    commit: bool = True,
 ) -> list[ZoomTarget]:
-    """Select, rank, and extrapolate autonomous DFXM zoom targets at ``current_scan_idx``."""
+    """Select, rank via Bayesian GP acquisition, and extrapolate DFXM zoom targets."""
     pol = policy or ZoomTriggerPolicy()
-    odd = pol.resolved_odd()
+    if not beam_ok:
+        return []
 
-    # FAL Eq. (6) & ODD safety: halt autonomous target emission on beam dumps or ODD sample excursions
-    health = min(max(float(instrument_health), 0.0), 1.0)
-    env_ok, _ = odd.check_sample_environment(stimulus)
-    if not env_ok or fal_level == "L1_halt" or health < odd.min_instrument_health:
+    if (
+        pol.voltage_bounds_v is not None
+        and stimulus is not None
+        and stimulus.voltage_v is not None
+        and math.isfinite(stimulus.voltage_v)
+    ):
+        v_lo, v_hi = min(pol.voltage_bounds_v), max(pol.voltage_bounds_v)
+        if not (v_lo <= float(stimulus.voltage_v) <= v_hi):
+            return []
+
+    acq_kind: AcquisitionKind = acquisition_override if acquisition_override is not None else pol.acquisition
+    limit = int(max_targets_override) if max_targets_override is not None else max(0, int(pol.max_triggers_per_scan))
+    if limit <= 0:
         return []
 
     kin_by_tid = {k.track_id: k for k in kinematics}
@@ -387,14 +416,10 @@ def select_zoom_targets(
     cooldown_map = last_triggered_scan_by_lineage if last_triggered_scan_by_lineage is not None else {}
     dose_map = zoom_counts_by_lineage if zoom_counts_by_lineage is not None else {}
     operando_dict = stimulus.to_dict() if stimulus is not None else None
-    dq_dv_boost = 0.0
-    if stimulus is not None and stimulus.dq_dv is not None and math.isfinite(stimulus.dq_dv):
-        dq_dv_boost = min(0.08, 0.08 * min(1.0, abs(float(stimulus.dq_dv)) / 250.0))
+    should_actuate = bool(pol.execution_mode == "active")
+    has_supervised_outcomes = bool(zoom_outcomes and len(zoom_outcomes) > 0)
 
-    k_thresh = reference_prior.kurtosis_threshold if reference_prior is not None else 0.75
-    should_actuate = bool(pol.execution_mode == "active" and fal_level == "L3")
-
-    raw_candidates: list[ZoomTarget] = []
+    eligible: list[dict[str, Any]] = []
     for obs in track_table:
         if int(obs["scan_idx"]) != current_scan_idx:
             continue
@@ -402,15 +427,10 @@ def select_zoom_targets(
         role = str(obs.get("lineage_role", ""))
         if pol.exclude_post_split_daughters and role in ("split_child", "split_daughter"):
             continue
-
-        touches_rocking = bool(obs.get("touches_rocking_border", False))
-        if pol.exclude_border_truncated and touches_rocking:
+        if pol.exclude_border_truncated and bool(obs.get("touches_rocking_border", False)):
             continue
-
-        intensity = float(obs.get("integrated_intensity", 0.0))
-        if intensity < pol.min_intensity:
+        if float(obs.get("integrated_intensity", 0.0)) < pol.min_intensity:
             continue
-
         margin = float(obs.get("assignment_margin", float("inf")))
         if margin < pol.min_assignment_margin:
             continue
@@ -419,143 +439,162 @@ def select_zoom_targets(
         if kin is None or current_scan_idx not in kin.scan_indices:
             continue
         pos = kin.scan_indices.index(current_scan_idx)
-        track_age = pos + 1
-        if track_age < pol.min_track_age:
+        if (pos + 1) < pol.min_track_age:
             continue
 
         root_tid = int(kin.root_track_id) if kin.root_track_id > 0 else tid
         prev_trig = cooldown_map.get(root_tid)
         if prev_trig is not None and (current_scan_idx - prev_trig) < pol.cooldown_scans:
             continue
-        if odd.max_zooms_per_lineage is not None and dose_map.get(root_tid, 0) >= int(odd.max_zooms_per_lineage):
+        if pol.max_zooms_per_lineage is not None and dose_map.get(root_tid, 0) >= int(pol.max_zooms_per_lineage):
             continue
 
         sc_now = score_at_current.get(tid)
         prec_score = float(sc_now.precursor_score) if sc_now is not None else 0.0
         subpeaks = int(sc_now.roi_subpeak_count) if sc_now is not None else 1
-        aniso = float(sc_now.anisotropy) if sc_now is not None else 1.0
+        aniso = float(sc_now.anisotropy) if sc_now is not None else float(kin.anisotropy[pos])
         pers = _trailing_persistence(scores_by_tid.get(tid, []), current_scan_idx, pol.min_precursor_score)
         s_rate = float(kin.strain_rate[pos]) if len(kin.strain_rate) > pos else 0.0
-        if abs(s_rate) < pol.min_strain_rate:
+
+        if abs(s_rate) < pol.min_strain_rate or subpeaks < pol.min_subpeaks:
             continue
-        if subpeaks < pol.min_subpeaks:
+
+        # In exploitation-aware modes without external DFXM zoom outcomes, gate on precursor persistence;
+        # in pure exploration ('max_variance') or with supervised zoom outcomes, score all eligible tracks.
+        if (
+            acq_kind in ("ucb", "ei")
+            and not has_supervised_outcomes
+            and (prec_score < pol.min_precursor_score or pers < pol.min_persistence)
+        ):
             continue
-
-        g2_val = spot_kurtosis_non_gaussianity(obs)
-        reasons: list[str] = [f"hypothesis={pol.hypothesis}"]
-
-        # FAL Level 3 Condition (iii): hypothesis-conditioned candidate admission & heuristic H(x)
-        if pol.hypothesis == "mechanical_fracture":
-            if sc_now is None or prec_score < pol.min_precursor_score or pers < pol.min_persistence:
-                continue
-            priority = (
-                0.55 * prec_score
-                + 0.20 * min(1.0, pers / 4.0)
-                + 0.15 * min(1.0, max(0, subpeaks - 1) * 0.5)
-                + 0.10 * min(1.0, abs(s_rate) / 0.005)
-                + dq_dv_boost
-            )
-            reasons.extend(
-                [
-                    f"precursor_score={prec_score:.3f}>={pol.min_precursor_score:.2f}",
-                    f"persistence={pers}_scans",
-                ]
-            )
-        elif pol.hypothesis == "phase_nucleation":
-            min_phase_rate = max(pol.min_strain_rate, 0.0015)
-            if abs(s_rate) < min_phase_rate:
-                continue
-            g2_d = abs(float(obs.get("kurtosis_d", 0.0)))
-            priority = (
-                0.65 * min(1.0, abs(s_rate) / 0.005)
-                + 0.15 * min(1.0, g2_d / max(k_thresh, 0.25))
-                + 0.10 * prec_score
-                + 0.10 * min(1.0, pers / 4.0)
-                + 2.0 * dq_dv_boost
-            )
-            reasons.append(f"phase_strain_rate={s_rate:+.5f}/scan")
-        elif pol.hypothesis == "intragranular_disorder":
-            if g2_val < k_thresh:
-                continue
-            priority = (
-                0.70 * min(1.0, g2_val / max(2.0 * k_thresh, 0.50))
-                + 0.15 * prec_score
-                + 0.15 * min(1.0, max(0.0, aniso - 1.0) / 2.0)
-                + dq_dv_boost
-            )
-            reasons.append(f"kurtosis_g2={g2_val:.3f}>={k_thresh:.3f}")
-        else:
-            raise ValueError(f"Unsupported hypothesis mode: {pol.hypothesis!r}")
-
-        if touches_rocking:
-            priority *= float(pol.border_truncation_penalty)
-            reasons.append("rocking_border_truncated")
-
-        # FAL Eq. (6): D(x) = H(x) * W(s_t)
-        disc_potential = priority * health
 
         l_strain = float(kin.lineage_strain[pos]) if len(kin.lineage_strain) > pos else float(kin.strain[pos])
         s_err = float(kin.lineage_strain_err[pos]) if len(kin.lineage_strain_err) > pos else 0.0
 
-        if subpeaks >= 2:
-            reasons.append(f"bimodal_subpeaks={subpeaks}")
-        if aniso >= 2.0:
-            reasons.append(f"mosaicity_anisotropy={aniso:.2f}")
-        if abs(s_rate) >= 0.001 and pol.hypothesis != "phase_nucleation":
-            reasons.append(f"strain_rate={s_rate:+.5f}/scan")
-        if dq_dv_boost > 0.02 and stimulus is not None and stimulus.voltage_v is not None:
-            reasons.append(f"redox_active_E={stimulus.voltage_v:.3f}V")
+        track_scores = sorted(
+            (s for s in scores_by_tid.get(tid, []) if s.scan_idx <= current_scan_idx),
+            key=lambda s: s.scan_idx,
+        )
+        if scan_elapsed_s and all(int(s.scan_idx) in scan_elapsed_s for s in track_scores):
+            s_times = np.asarray([float(scan_elapsed_s[int(s.scan_idx)]) for s in track_scores], dtype=np.float64)
+        else:
+            s_times = np.asarray([float(s.scan_idx) for s in track_scores], dtype=np.float64)
+        s_hist = np.asarray([float(s.precursor_score) for s in track_scores], dtype=np.float64)
 
-        cur_c, pred_c, half_w, c_err, scat = compute_target_geometry(
-            obs,
-            kin,
-            pos,
+        f_vec = np.array(
+            [
+                abs(l_strain),
+                abs(s_rate),
+                math.log1p(max(0.0, aniso - 1.0)),
+                float(max(0, subpeaks - 1)),
+                prec_score,
+            ],
+            dtype=np.float64,
+        )
+
+        eligible.append(
+            {
+                "obs": obs,
+                "kin": kin,
+                "pos": pos,
+                "tid": tid,
+                "root_tid": root_tid,
+                "prec_score": prec_score,
+                "subpeaks": subpeaks,
+                "aniso": aniso,
+                "pers": pers,
+                "s_rate": s_rate,
+                "l_strain": l_strain,
+                "s_err": s_err,
+                "margin": margin,
+                "score_times": s_times,
+                "score_history": s_hist,
+                "feature_vec": f_vec,
+            }
+        )
+
+    if not eligible:
+        return []
+
+    gp_mu, gp_std, acq_scores = score_candidates_gp(
+        eligible,
+        acquisition=acq_kind,
+        beta=pol.ucb_beta,
+        xi=pol.ei_xi,
+        lead_scans=pol.lead_scans,
+        zoom_outcomes=zoom_outcomes,
+    )
+
+    order = sorted(range(len(eligible)), key=lambda i: (-float(acq_scores[i]), int(eligible[i]["tid"])))
+    selected: list[ZoomTarget] = []
+    seen_roots: set[int] = set()
+
+    for idx in order:
+        if len(selected) >= limit:
+            break
+        rec = eligible[idx]
+        root_tid = int(rec["root_tid"])
+        if root_tid in seen_roots:
+            continue
+        seen_roots.add(root_tid)
+
+        cur_c, pred_c, half_w, c_err, pred_std, scat = compute_target_geometry(
+            rec["obs"],
+            rec["kin"],
+            int(rec["pos"]),
             lead_scans=pol.lead_scans,
             window_sigma=pol.window_sigma,
             calibration=calibration,
             detector=detector,
-            max_extrapolation_steps=odd.max_extrapolation_steps,
+            max_extrapolation_steps=pol.max_extrapolation_steps,
+            scan_elapsed_s=scan_elapsed_s,
+            use_gp=pol.use_gp_extrapolation,
         )
-        pred_c, half_w, was_clamped = odd.clamp_setpoint(pred_c, half_w)
+        pred_c, half_w, was_clamped = clamp_setpoint_bounds(
+            pred_c,
+            half_w,
+            mu_bounds=pol.mu_bounds,
+            chi_bounds=pol.chi_bounds,
+            d_bounds=pol.d_bounds,
+        )
+
+        reasons: list[str] = [
+            f"acquisition={acq_kind}({float(acq_scores[idx]):.3f})",
+            f"gp_posterior={float(gp_mu[idx]):.3f}+/-{float(gp_std[idx]):.3f}",
+        ]
+        if float(rec["prec_score"]) >= pol.min_precursor_score:
+            reasons.append(f"precursor_score={float(rec['prec_score']):.3f}")
+        if int(rec["pers"]) >= 1:
+            reasons.append(f"persistence={int(rec['pers'])}_scans")
+        if int(rec["subpeaks"]) >= 2:
+            reasons.append(f"bimodal_subpeaks={int(rec['subpeaks'])}")
+        if float(rec["aniso"]) >= 2.0:
+            reasons.append(f"mosaicity_anisotropy={float(rec['aniso']):.2f}")
         if was_clamped:
             reasons.append("clamped_to_motor_bounds")
-            if detector is not None:
-                if calibration is not None and calibration.calibrated:
-                    z_idx = (pred_c[0] - calibration.mu_origin) / (
-                        calibration.mu_step if calibration.mu_step != 0 else 1.0
-                    )
-                    x_px = (pred_c[1] - calibration.chi_origin) / (
-                        calibration.chi_step if calibration.chi_step != 0 else 1.0
-                    )
-                    y_px = (pred_c[2] - calibration.d_origin) / (calibration.d_step if calibration.d_step != 0 else 1.0)
-                else:
-                    z_idx, y_px, x_px = pred_c[0], pred_c[2], pred_c[1]
-                scat = detector.spot_to_scattering(z_idx, y_px, x_px)
 
-        pred_std = compute_predictive_std(
-            obs,
-            kin,
-            pos,
-            lead_scans=pol.lead_scans,
-            calibration=calibration,
-        )
+        if commit:
+            if last_triggered_scan_by_lineage is not None:
+                last_triggered_scan_by_lineage[root_tid] = current_scan_idx
+            if zoom_counts_by_lineage is not None:
+                zoom_counts_by_lineage[root_tid] = zoom_counts_by_lineage.get(root_tid, 0) + 1
 
-        raw_candidates.append(
+        selected.append(
             ZoomTarget(
                 scan_idx=current_scan_idx,
                 scan_name=scan_name,
-                track_id=tid,
+                track_id=int(rec["tid"]),
                 root_track_id=root_tid,
-                priority_rank=0,
-                priority_score=float(disc_potential),
-                precursor_score=prec_score,
-                persistence_scans=pers,
-                roi_subpeak_count=subpeaks,
-                anisotropy=aniso,
-                lineage_strain=l_strain,
-                strain_err=s_err,
-                strain_rate=s_rate,
-                assignment_margin=margin,
+                priority_rank=len(selected) + 1,
+                priority_score=float(acq_scores[idx]),
+                precursor_score=float(rec["prec_score"]),
+                persistence_scans=int(rec["pers"]),
+                roi_subpeak_count=int(rec["subpeaks"]),
+                anisotropy=float(rec["aniso"]),
+                lineage_strain=float(rec["l_strain"]),
+                strain_err=float(rec["s_err"]),
+                strain_rate=float(rec["s_rate"]),
+                assignment_margin=float(rec["margin"]),
                 current_centroid=cur_c,
                 predicted_setpoint=pred_c,
                 scan_half_widths=half_w,
@@ -565,54 +604,12 @@ def select_zoom_targets(
                 scattering_angles=scat,
                 operando_state=operando_dict,
                 predictive_std=pred_std,
-                kurtosis_non_gaussianity=g2_val,
-                discovery_potential=float(disc_potential),
-                instrument_health=health,
-                hypothesis=pol.hypothesis,
+                acquisition_kind=acq_kind,
+                gp_posterior_mean=float(gp_mu[idx]),
+                gp_posterior_std=float(gp_std[idx]),
                 execution_mode=pol.execution_mode,
                 actuate=should_actuate,
-                fal_level=fal_level,
             )
         )
 
-    raw_candidates.sort(key=lambda t: (-t.priority_score, -t.precursor_score, t.track_id))
-    selected = raw_candidates[: max(0, int(pol.max_triggers_per_scan))]
-    ranked: list[ZoomTarget] = []
-    for rank_idx, tgt in enumerate(selected, start=1):
-        cooldown_map[tgt.root_track_id] = current_scan_idx
-        dose_map[tgt.root_track_id] = dose_map.get(tgt.root_track_id, 0) + 1
-        ranked.append(
-            ZoomTarget(
-                scan_idx=tgt.scan_idx,
-                scan_name=tgt.scan_name,
-                track_id=tgt.track_id,
-                root_track_id=tgt.root_track_id,
-                priority_rank=rank_idx,
-                priority_score=tgt.priority_score,
-                precursor_score=tgt.precursor_score,
-                persistence_scans=tgt.persistence_scans,
-                roi_subpeak_count=tgt.roi_subpeak_count,
-                anisotropy=tgt.anisotropy,
-                lineage_strain=tgt.lineage_strain,
-                strain_err=tgt.strain_err,
-                strain_rate=tgt.strain_rate,
-                assignment_margin=tgt.assignment_margin,
-                current_centroid=tgt.current_centroid,
-                predicted_setpoint=tgt.predicted_setpoint,
-                scan_half_widths=tgt.scan_half_widths,
-                centroid_err=tgt.centroid_err,
-                lead_scans=tgt.lead_scans,
-                trigger_reasons=tgt.trigger_reasons,
-                scattering_angles=tgt.scattering_angles,
-                operando_state=tgt.operando_state,
-                predictive_std=tgt.predictive_std,
-                kurtosis_non_gaussianity=tgt.kurtosis_non_gaussianity,
-                discovery_potential=tgt.discovery_potential,
-                instrument_health=tgt.instrument_health,
-                hypothesis=tgt.hypothesis,
-                execution_mode=tgt.execution_mode,
-                actuate=tgt.actuate,
-                fal_level=tgt.fal_level,
-            )
-        )
-    return ranked
+    return selected
