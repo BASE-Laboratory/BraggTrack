@@ -1,7 +1,16 @@
 """Multi-scan 4D grain tracking, lineage DAGs, kinematics, and fracture precursors."""
 
 from .assignment import associate_frames, compute_assignment_margins
-from .cost import CostFunction, GeometrySemanticCost, PositionShapeCost
+from .cost import CostFunction, GeometrySemanticCost, PositionShapeCost, WassersteinBuresCost
+from .drift import (
+    DriftMode,
+    TrackKalmanState,
+    apply_predicted_shifts,
+    estimate_band_shifts_consensus,
+    estimate_slab_shifts_fft,
+    group_local_rocking_patches,
+    is_single_slice_speck,
+)
 from .events import LineageEvent, SplitMergeConfig, events_to_table, resolve_splits_and_merges
 from .gap_closing import GapCloseRecord, GapClosingConfig, resolve_track_gaps
 from .kinematics import (
@@ -17,14 +26,17 @@ from .metrics import compute_tracking_metrics
 from .precursors import (
     ObservationPrecursorScore,
     PrecursorCandidate,
+    PrecursorChannelMetrics,
     PrecursorConfig,
     compute_fracture_precursors,
+    evaluate_precursor_channels_roc,
     precursors_to_table,
 )
 from .synthetic import generate_crossing_scenario, generate_fracture_scenario
 
 __all__ = [
     "CostFunction",
+    "DriftMode",
     "GapCloseRecord",
     "GapClosingConfig",
     "GeometrySemanticCost",
@@ -34,18 +46,27 @@ __all__ = [
     "ObservationPrecursorScore",
     "PositionShapeCost",
     "PrecursorCandidate",
+    "PrecursorChannelMetrics",
     "PrecursorConfig",
     "SplitMergeConfig",
     "TrackEvent",
+    "TrackKalmanState",
+    "WassersteinBuresCost",
+    "apply_predicted_shifts",
     "associate_frames",
     "build_tracks",
     "compute_assignment_margins",
     "compute_fracture_precursors",
     "compute_grain_kinematics",
     "compute_tracking_metrics",
+    "estimate_band_shifts_consensus",
+    "estimate_slab_shifts_fft",
+    "evaluate_precursor_channels_roc",
     "events_to_table",
     "generate_crossing_scenario",
     "generate_fracture_scenario",
+    "group_local_rocking_patches",
+    "is_single_slice_speck",
     "kinematics_to_table",
     "precursors_to_table",
     "resolve_splits_and_merges",

@@ -6,6 +6,7 @@ from .classical import (
     h_maxima_seeds,
     local_maxima_seeds,
     log_enhance_3d,
+    resolve_anisotropic_sigma,
     segment_classical,
     watershed_from_seeds,
 )
@@ -33,6 +34,7 @@ __all__ = [
     "otsu_floor_from_mip",
     "flag_outlier_frames",
     "otsu_threshold",
+    "resolve_anisotropic_sigma",
     "smooth_thresholds",
     "relabel_sequential",
     "remove_small_objects",

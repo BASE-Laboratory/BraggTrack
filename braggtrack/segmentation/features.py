@@ -11,6 +11,19 @@ if TYPE_CHECKING:
     from braggtrack.io.models import AxisCalibration
 
 
+def _skewness(delta: np.ndarray, weights: np.ndarray) -> float:
+    """Standardised third central moment (``gamma_1 = mu_3 / mu_2^(3/2)``).
+
+    Zero for symmetric Bragg profiles; non-zero when core-shell delithiation
+    gradients or partial dislocation slip create asymmetric strain/mosaicity tails.
+    """
+    m2 = float(np.dot(weights, delta * delta))
+    if m2 <= 1e-12:
+        return 0.0
+    m3 = float(np.dot(weights, (delta * delta) * delta))
+    return float(m3 / (m2 * np.sqrt(m2)))
+
+
 def _excess_kurtosis(delta: np.ndarray, weights: np.ndarray) -> float:
     """Standardised fourth central moment (Pearson excess kurtosis ``g_2 = mu_4 / mu_2^2 - 3``).
 
@@ -196,10 +209,19 @@ def extract_instance_table(
             cz_k = float(np.dot(w_kurt, rz + kz0))
             cy_k = float(np.dot(w_kurt, ry + ky0))
             cx_k = float(np.dot(w_kurt, rx + kx0))
-            k_mu = _excess_kurtosis((rz + kz0) - cz_k, w_kurt)
-            k_chi = _excess_kurtosis((rx + kx0) - cx_k, w_kurt)
-            k_d = _excess_kurtosis((ry + ky0) - cy_k, w_kurt)
+            dz_k = (rz + kz0) - cz_k
+            dx_k = (rx + kx0) - cx_k
+            dy_k = (ry + ky0) - cy_k
+            s_mu = _skewness(dz_k, w_kurt)
+            s_chi = _skewness(dx_k, w_kurt)
+            s_d = _skewness(dy_k, w_kurt)
+            k_mu = _excess_kurtosis(dz_k, w_kurt)
+            k_chi = _excess_kurtosis(dx_k, w_kurt)
+            k_d = _excess_kurtosis(dy_k, w_kurt)
         else:
+            s_mu = _skewness(dz_vox, w)
+            s_chi = _skewness(dx_vox, w)
+            s_d = _skewness(dy_vox, w)
             k_mu = _excess_kurtosis(dz_vox, w)
             k_chi = _excess_kurtosis(dx_vox, w)
             k_d = _excess_kurtosis(dy_vox, w)
@@ -235,6 +257,9 @@ def extract_instance_table(
                 "vox_eig_1": float(vox_eigs[0]),
                 "vox_eig_2": float(vox_eigs[1]),
                 "vox_eig_3": float(vox_eigs[2]),
+                "skewness_mu": s_mu,
+                "skewness_chi": s_chi,
+                "skewness_d": s_d,
                 "kurtosis_mu": k_mu,
                 "kurtosis_chi": k_chi,
                 "kurtosis_d": k_d,

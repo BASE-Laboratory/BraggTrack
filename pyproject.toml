@@ -62,6 +62,7 @@ braggtrack-events = "braggtrack.cli.detect_events:main"
 braggtrack-report = "braggtrack.cli.report_dataset:main"
 braggtrack-run = "braggtrack.cli.run_pipeline:main"
 braggtrack-watch = "braggtrack.cli.watch_autonomous:main"
+braggtrack-eval-archive = "braggtrack.cli.eval_archive:main"
 
 [tool.setuptools.packages.find]
 include = ["braggtrack*"]

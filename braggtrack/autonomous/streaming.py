@@ -20,7 +20,7 @@ import math
 import time
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 import networkx as nx
 import numpy as np
@@ -37,7 +37,8 @@ from braggtrack.segmentation import (
 )
 from braggtrack.semantic import DEFAULT_DINO_MODEL, make_multiview_encoder, make_patch_encoder
 from braggtrack.semantic.mips import crop_spot_cube, orthogonal_mips
-from braggtrack.tracking.cost import GeometrySemanticCost, PositionShapeCost
+from braggtrack.tracking.cost import CostFunction, GeometrySemanticCost, PositionShapeCost, WassersteinBuresCost
+from braggtrack.tracking.drift import DriftMode, estimate_slab_shifts_fft
 from braggtrack.tracking.events import LineageEvent, SplitMergeConfig, events_to_table
 from braggtrack.tracking.gap_closing import GapClosingConfig
 from braggtrack.tracking.kinematics import GrainKinematics, compute_grain_kinematics
@@ -107,8 +108,11 @@ class CausalStreamingTracker:
         seed_peak_fraction: float = 0.08,
         seed_response_percentile: float = 95.0,
         min_spot_voxels: int = 6,
+        anisotropic_segmentation: bool = False,
         calibration: AxisCalibration | None = None,
         detector: DetectorGeometry | None = None,
+        cost_model: Literal["position_shape", "wasserstein_bures"] = "position_shape",
+        drift_mode: DriftMode = "none",
         cost_alpha: float = 1.0,
         cost_beta: float = 0.0,
         max_cost: float = 900.0,
@@ -129,8 +133,11 @@ class CausalStreamingTracker:
         self.seed_peak_fraction = float(seed_peak_fraction)
         self.seed_response_percentile = float(seed_response_percentile)
         self.min_spot_voxels = max(1, int(min_spot_voxels))
+        self.anisotropic_segmentation = bool(anisotropic_segmentation)
         self.calibration = calibration
         self.detector = detector
+        self.cost_model = cost_model
+        self.drift_mode: DriftMode = drift_mode
         self.cost_alpha = float(cost_alpha)
         self.cost_beta = float(cost_beta)
         self.max_cost = float(max_cost)
@@ -150,14 +157,25 @@ class CausalStreamingTracker:
             make_multiview_encoder(backend, model_name=model_name) if self.cost_beta > 0.0 else None
         )
         self._patch_encoder = make_patch_encoder(backend, model_name=model_name) if use_patch_encoder else None
-        self._cost_fn = GeometrySemanticCost(
-            PositionShapeCost(
+        base_cost: CostFunction
+        if self.cost_model == "wasserstein_bures":
+            base_cost = WassersteinBuresCost(
+                bures_weight=1.0,
+                intensity_weight=25.0,
+                max_step_mu=self.max_step_mu,
+                max_step_chi=self.max_step_chi,
+                max_step_d=self.max_step_d,
+            )
+        else:
+            base_cost = PositionShapeCost(
                 shape_weight=2.0,
                 intensity_weight=25.0,
                 max_step_mu=self.max_step_mu,
                 max_step_chi=self.max_step_chi,
                 max_step_d=self.max_step_d,
-            ),
+            )
+        self._cost_fn = GeometrySemanticCost(
+            base_cost,
             cost_alpha=self.cost_alpha,
             cost_beta=self.cost_beta,
         )
@@ -170,8 +188,10 @@ class CausalStreamingTracker:
         self._scan_timestamps: dict[int, str | None] = {}
         self._scan_elapsed_s: dict[int, float] = {}
         self._scan_tables: list[list[dict[str, Any]]] = []
+        self._prev_vol: np.ndarray | None = None
+        self._pair_shifts: dict[int, list[tuple[float, float, float]]] = {}
         self._stimuli: dict[int, ScanStimulusPoint] = {}
-        self._roi_cache: dict[tuple[int, int], tuple[int, float]] = {}
+        self._roi_cache: dict[tuple[int, int], Any] = {}
         self._cooldown_by_lineage: dict[int, int] = {}
         self._zoom_counts_by_lineage: dict[int, int] = {}
         self._zoom_outcomes: dict[int, tuple[np.ndarray, float]] = {}
@@ -288,12 +308,15 @@ class CausalStreamingTracker:
                     self._committed_rows.append(row)
             prev_events: list[LineageEvent] = list(self._graph.graph.get("window_lineage_events", []))
             for ev in prev_events:
-                if self._committed_up_to_scan < ev.scan_idx_to < win_start:
+                if self._committed_up_to_scan < ev.scan_idx_from < win_start:
                     self._committed_events.append(ev)
             self._committed_up_to_scan = win_start - 1
             stale_keys = [k for k in self._roi_cache if k[0] < win_start - 1]
             for k in stale_keys:
                 del self._roi_cache[k]
+            stale_shifts = [k for k in self._pair_shifts if k < win_start - 1]
+            for k in stale_shifts:
+                del self._pair_shifts[k]
 
         if win_start == 0:
             G = build_tracks(
@@ -303,6 +326,9 @@ class CausalStreamingTracker:
                 gap_closing_config=self.gap_config,
                 split_merge_config=self.split_merge_config,
                 scan_timestamps=self._scan_timestamps,
+                drift_mode=self.drift_mode,
+                precomputed_pair_shifts=self._pair_shifts if self._pair_shifts else None,
+                scan_elapsed_s=self._scan_elapsed_s if self._scan_elapsed_s else None,
             )
             w_rows = tracks_to_table(G)
             for row in w_rows:
@@ -320,6 +346,8 @@ class CausalStreamingTracker:
 
         sub_tables = self._scan_tables[win_start : scan_idx + 1]
         sub_ts = {k - win_start: v for k, v in self._scan_timestamps.items() if k >= win_start}
+        sub_shifts = {k - win_start: v for k, v in self._pair_shifts.items() if win_start <= k < scan_idx}
+        sub_elapsed = {k - win_start: v for k, v in self._scan_elapsed_s.items() if k >= win_start}
         G_local = build_tracks(
             sub_tables,
             cost_fn=self._cost_fn,
@@ -327,6 +355,9 @@ class CausalStreamingTracker:
             gap_closing_config=self.gap_config,
             split_merge_config=self.split_merge_config,
             scan_timestamps=sub_ts,
+            drift_mode=self.drift_mode,
+            precomputed_pair_shifts=sub_shifts if sub_shifts else None,
+            scan_elapsed_s=sub_elapsed if sub_elapsed else None,
         )
 
         nodes_by_local_tid: dict[int, list[tuple[int, int, str]]] = {}
@@ -387,20 +418,14 @@ class CausalStreamingTracker:
         remapped_win_events: list[LineageEvent] = []
         for ev in G_local.graph.get("lineage_events", []):
             remapped_win_events.append(
-                LineageEvent(
-                    event_type=ev.event_type,
+                replace(
+                    ev,
                     scan_idx_from=ev.scan_idx_from + win_start,
                     scan_idx_to=ev.scan_idx_to + win_start,
-                    parent_track_ids=[local_to_global.get(int(p), int(p)) for p in ev.parent_track_ids],
-                    child_track_ids=[local_to_global.get(int(c), int(c)) for c in ev.child_track_ids],
-                    intensity_ratio=ev.intensity_ratio,
-                    mean_distance=ev.mean_distance,
-                    confidence=ev.confidence,
-                    timestamp_from=ev.timestamp_from,
-                    timestamp_to=ev.timestamp_to,
-                    split_subtype=ev.split_subtype,
-                    delta_orientation_norm=ev.delta_orientation_norm,
-                    delta_d_norm=ev.delta_d_norm,
+                    parent_track_ids=tuple(local_to_global.get(int(p), int(p)) for p in ev.parent_track_ids),
+                    child_track_ids=tuple(local_to_global.get(int(c), int(c)) for c in ev.child_track_ids),
+                    parent_nodes=tuple(nid_map.get(n, n) for n in ev.parent_nodes),
+                    child_nodes=tuple(nid_map.get(n, n) for n in ev.child_nodes),
                 )
             )
         all_events = [*self._committed_events, *remapped_win_events]
@@ -449,9 +474,24 @@ class CausalStreamingTracker:
             threshold=causal_thr,
             seed_peak_fraction=self.seed_peak_fraction,
             seed_response_percentile=self.seed_response_percentile,
+            anisotropic_auto=self.anisotropic_segmentation,
         )
         labels = relabel_sequential(remove_small_objects(seg.labeled_volume, min_size=self.min_spot_voxels))
         spots = extract_instance_table(labels, vol, calibration=active_cal) if beam_ok else []
+
+        if self.drift_mode in ("fft", "fft_kalman"):
+            if scan_idx > 0 and self._prev_vol is not None and self._scan_tables[scan_idx - 1]:
+                self._pair_shifts[scan_idx - 1], _ = estimate_slab_shifts_fft(
+                    self._prev_vol,
+                    vol,
+                    self._scan_tables[scan_idx - 1],
+                    max_step_chi=self.max_step_chi,
+                    max_step_d=self.max_step_d,
+                    calibration=active_cal,
+                )
+            self._prev_vol = vol
+        else:
+            self._prev_vol = None
 
         if self._multiview_encoder is not None and spots:
             triplets: list[tuple[np.ndarray, np.ndarray, np.ndarray]] = []
@@ -571,6 +611,7 @@ class CausalStreamingTracker:
             calibration=self._last_active_cal,
             detector=self.detector,
             stimulus=self._stimuli.get(scan_idx),
+            stimuli_by_scan=self._stimuli if self._stimuli else None,
             scan_elapsed_s=self._scan_elapsed_s if self._scan_elapsed_s else None,
             last_triggered_scan_by_lineage=self._cooldown_by_lineage,
             zoom_counts_by_lineage=self._zoom_counts_by_lineage,
