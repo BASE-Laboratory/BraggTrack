@@ -19,6 +19,7 @@ import numpy as np
 
 BackendName = Literal["auto", "mock", "torch"]
 DEFAULT_DINO_MODEL = "facebook/dinov2-small"
+DEFAULT_DINO_REVISION = "ed25f3a31f01632728cabb09d1542f84ab7b0056"
 
 
 def _resolve_backend(requested: BackendName) -> Literal["mock", "torch"]:
@@ -36,12 +37,17 @@ def _resolve_backend(requested: BackendName) -> Literal["mock", "torch"]:
     return "torch"
 
 
-def _load_hf_dino(model_name: str) -> tuple[Any, Any]:
+def _load_hf_dino(model_name: str, *, revision: str | None = None) -> tuple[Any, Any]:
     from transformers import AutoImageProcessor, AutoModel
 
+    resolved_rev = revision
+    if resolved_rev is None and model_name == DEFAULT_DINO_MODEL:
+        resolved_rev = DEFAULT_DINO_REVISION
+    hf_kwargs: dict[str, Any] = {"revision": resolved_rev} if resolved_rev is not None else {}
+
     try:
-        proc = AutoImageProcessor.from_pretrained(model_name)
-        model = AutoModel.from_pretrained(model_name)
+        proc = AutoImageProcessor.from_pretrained(model_name, **hf_kwargs)
+        model = AutoModel.from_pretrained(model_name, **hf_kwargs)
     except OSError as exc:
         msg = str(exc)
         if any(tok in msg.lower() for tok in ("gated", "401", "403", "authenticated")):

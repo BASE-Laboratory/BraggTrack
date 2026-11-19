@@ -374,7 +374,7 @@ def build_explorer_payload(
         "calibrated_axes": bool(trk_summary.get("calibrated_axes", False)),
         "backend": evt_summary.get("backend") or manifest.get("config", {}).get("backend") or "n/a",
         "model": evt_summary.get("model") or manifest.get("config", {}).get("model") or "n/a",
-        "braggtrack_version": manifest.get("braggtrack_version", "0.5.0"),
+        "braggtrack_version": manifest.get("braggtrack_version", "0.5.1"),
         "total_duration_sec": manifest.get("total_duration_sec"),
         "kpis": {
             "total_tracks": len(tracks_payload),

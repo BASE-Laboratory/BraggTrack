@@ -8,6 +8,7 @@ from typing import Any, Literal
 
 import networkx as nx
 import numpy as np
+from scipy.spatial import cKDTree
 
 from .cost import _spot_scales
 
@@ -107,6 +108,28 @@ def _classify_split_subtype(
     return subtype, max_orient, max_d
 
 
+def _raw_pair_distance(
+    a: dict[str, Any],
+    b: dict[str, Any],
+    config: SplitMergeConfig,
+    *,
+    shift_a: tuple[float, float, float] = (0.0, 0.0, 0.0),
+) -> float:
+    """Compute ungated step-normalized or raw 3D centroid distance between ``a`` and ``b``."""
+    mu_a, chi_a, d_a = _spot_coords(a)
+    mu_b, chi_b, d_b = _spot_coords(b)
+    dmu = abs((mu_a + float(shift_a[0])) - mu_b)
+    dchi = abs((chi_a + float(shift_a[1])) - chi_b)
+    dd = abs((d_a + float(shift_a[2])) - d_b)
+    if config.normalize_by_step:
+        sma, sca, sda = _spot_scales(a)
+        smb, scb, sdb = _spot_scales(b)
+        dmu /= 0.5 * (sma + smb)
+        dchi /= 0.5 * (sca + scb)
+        dd /= 0.5 * (sda + sdb)
+    return math.sqrt(dmu * dmu + dchi * dchi + dd * dd)
+
+
 def _pair_distance_and_sim(
     a: dict[str, Any],
     b: dict[str, Any],
@@ -137,17 +160,72 @@ def _pair_distance_and_sim(
     if emb_a is not None and emb_b is not None:
         va = np.asarray(emb_a, dtype=np.float64).ravel()
         vb = np.asarray(emb_b, dtype=np.float64).ravel()
-        if va.size > 0 and va.shape == vb.shape:
+        if va.size > 0 and vb.size > 0:
+            if va.shape != vb.shape:
+                raise ValueError(f"Mismatched embedding shapes in split/merge check: {va.shape} vs {vb.shape}")
             na = float(np.linalg.norm(va))
             nb = float(np.linalg.norm(vb))
             if na > 0 and nb > 0:
                 sim = float(np.clip(np.dot(va / na, vb / nb), -1.0, 1.0))
                 if config.min_semantic_similarity is not None and sim < config.min_semantic_similarity:
                     return None
-    elif config.min_semantic_similarity is not None:
-        return None
 
     return dist, sim
+
+
+def _build_transition_neighbors(
+    G: nx.DiGraph,
+    scan_t_nodes: list[str],
+    scan_t1_nodes: list[str],
+    cfg: SplitMergeConfig,
+    shift_map: dict[str, tuple[float, float, float]],
+) -> tuple[list[list[int]], list[list[int]]]:
+    """Build exact candidate neighbor index lists via ``cKDTree`` within ``cfg.max_distance``."""
+    n_t = len(scan_t_nodes)
+    n_t1 = len(scan_t1_nodes)
+    if not math.isfinite(cfg.max_distance):
+        all_t1 = list(range(n_t1))
+        all_t = list(range(n_t))
+        return [all_t1 for _ in range(n_t)], [all_t for _ in range(n_t1)]
+
+    zero_shift = (0.0, 0.0, 0.0)
+    x_t = np.empty((n_t, 3), dtype=np.float64)
+    for i, nid in enumerate(scan_t_nodes):
+        mu, chi, d = _spot_coords(G.nodes[nid])
+        sh = shift_map.get(nid, zero_shift)
+        x_t[i, 0] = mu + float(sh[0])
+        x_t[i, 1] = chi + float(sh[1])
+        x_t[i, 2] = d + float(sh[2])
+
+    x_t1 = np.empty((n_t1, 3), dtype=np.float64)
+    for j, nid in enumerate(scan_t1_nodes):
+        x_t1[j] = _spot_coords(G.nodes[nid])
+
+    if cfg.normalize_by_step:
+        max_s = np.array([1e-12, 1e-12, 1e-12], dtype=np.float64)
+        for nid in (*scan_t_nodes, *scan_t1_nodes):
+            sm, sc, sd = _spot_scales(G.nodes[nid])
+            if sm > max_s[0]:
+                max_s[0] = sm
+            if sc > max_s[1]:
+                max_s[1] = sc
+            if sd > max_s[2]:
+                max_s[2] = sd
+        y_t = x_t / max_s
+        y_t1 = x_t1 / max_s
+    else:
+        y_t = x_t
+        y_t1 = x_t1
+
+    r_query = max(0.0, float(cfg.max_distance)) * (1.0 + 1e-9) + 1e-12
+    tree_t = cKDTree(y_t)
+    tree_t1 = cKDTree(y_t1)
+    nbrs_t_to_t1: list[list[int]] = tree_t.query_ball_tree(tree_t1, r=r_query)
+    nbrs_t1_to_t: list[list[int]] = [[] for _ in range(n_t1)]
+    for i_u, js in enumerate(nbrs_t_to_t1):
+        for j_v in js:
+            nbrs_t1_to_t[j_v].append(i_u)
+    return nbrs_t_to_t1, nbrs_t1_to_t
 
 
 def _event_confidence(
@@ -222,46 +300,44 @@ def resolve_splits_and_merges(
         ts = scan_timestamps.get(t + 1) if scan_timestamps else None
         from .lifecycle import TrackEvent
 
+        idx_t = {nid: i for i, nid in enumerate(scan_t_nodes)}
+        idx_t1 = {nid: j for j, nid in enumerate(scan_t1_nodes)}
+        nbrs_t_to_t1, nbrs_t1_to_t = _build_transition_neighbors(G, scan_t_nodes, scan_t1_nodes, cfg, shift_map)
+
         existing_edges = [
             (u, v)
             for u in scan_t_nodes
             for v in list(G.successors(u))
-            if v in scan_t1_nodes and G.edges[u, v].get("edge_type", "continuation") == "continuation"
+            if v in idx_t1 and G.edges[u, v].get("edge_type", "continuation") == "continuation"
         ]
         provisional_severed: list[tuple[str, str, dict[str, Any], Any, int, int]] = []
         for u, v in existing_edges:
             sh_u = shift_map.get(u, zero_shift)
-            uv_res = _pair_distance_and_sim(G.nodes[u], G.nodes[v], cfg, shift_a=sh_u)
-            hard_sever = uv_res is None
-            soft_sever = False
-            if not hard_sever and uv_res is not None:
-                d_uv = uv_res[0]
-                min_u_other = min(
-                    (
-                        r[0]
-                        for c in scan_t1_nodes
-                        if c != v
-                        and (r := _pair_distance_and_sim(G.nodes[u], G.nodes[c], cfg, shift_a=sh_u)) is not None
-                    ),
-                    default=math.inf,
-                )
-                min_v_other = min(
-                    (
-                        r[0]
-                        for p in scan_t_nodes
-                        if p != u
-                        and (
-                            r := _pair_distance_and_sim(
-                                G.nodes[p], G.nodes[v], cfg, shift_a=shift_map.get(p, zero_shift)
-                            )
-                        )
-                        is not None
-                    ),
-                    default=math.inf,
-                )
-                if min_u_other < 0.5 * d_uv and min_v_other < 0.5 * d_uv:
-                    soft_sever = True
-            if hard_sever or soft_sever:
+            d_uv = _raw_pair_distance(G.nodes[u], G.nodes[v], cfg, shift_a=sh_u)
+            if d_uv <= 0.0:
+                continue
+            min_u_other = min(
+                (
+                    r[0]
+                    for j_c in nbrs_t_to_t1[idx_t[u]]
+                    if (c := scan_t1_nodes[j_c]) != v
+                    and (r := _pair_distance_and_sim(G.nodes[u], G.nodes[c], cfg, shift_a=sh_u)) is not None
+                ),
+                default=math.inf,
+            )
+            if min_u_other >= 0.5 * d_uv:
+                continue
+            min_v_other = min(
+                (
+                    r[0]
+                    for i_p in nbrs_t1_to_t[idx_t1[v]]
+                    if (p := scan_t_nodes[i_p]) != u
+                    and (r := _pair_distance_and_sim(G.nodes[p], G.nodes[v], cfg, shift_a=shift_map.get(p, zero_shift)))
+                    is not None
+                ),
+                default=math.inf,
+            )
+            if min_v_other < 0.5 * d_uv:
                 edata_saved = dict(G.edges[u, v])
                 prev_u_event = G.nodes[u].get("event", TrackEvent.CONTINUED)
                 u_tid = int(G.nodes[u]["track_id"])
@@ -272,8 +348,7 @@ def resolve_splits_and_merges(
                 next_tid += 1
                 _propagate_track_id(G, v, old_v_tid, fresh_tid)
                 G.nodes[v]["event"] = TrackEvent.BORN
-                if soft_sever:
-                    provisional_severed.append((u, v, edata_saved, prev_u_event, u_tid, fresh_tid))
+                provisional_severed.append((u, v, edata_saved, prev_u_event, u_tid, fresh_tid))
 
         # --- Pass 1: Splits (1 -> 2+) ---
         unmatched_children = [nid for nid in scan_t1_nodes if G.in_degree(nid) == 0]
@@ -282,7 +357,8 @@ def resolve_splits_and_merges(
             best_p: str | None = None
             best_dist = math.inf
             best_sim: float | None = None
-            for p_nid in scan_t_nodes:
+            for i_p in nbrs_t1_to_t[idx_t1[c_nid]]:
+                p_nid = scan_t_nodes[i_p]
                 res = _pair_distance_and_sim(
                     G.nodes[p_nid], G.nodes[c_nid], cfg, shift_a=shift_map.get(p_nid, zero_shift)
                 )
@@ -405,7 +481,8 @@ def resolve_splits_and_merges(
             best_dist = math.inf
             best_sim: float | None = None
             sh_p = shift_map.get(p_nid, zero_shift)
-            for c_nid in scan_t1_nodes:
+            for j_c in nbrs_t_to_t1[idx_t[p_nid]]:
+                c_nid = scan_t1_nodes[j_c]
                 if G.nodes[c_nid].get("lineage_role") == "split_child":
                     continue
                 res = _pair_distance_and_sim(G.nodes[p_nid], G.nodes[c_nid], cfg, shift_a=sh_p)

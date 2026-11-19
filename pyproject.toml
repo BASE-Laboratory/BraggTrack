@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "braggtrack"
-version = "0.5.0"
-description = "4D grain kinematics, lineage, and fracture precursor tracking for operando X-ray diffraction."
+version = "0.5.1"
+description = "4D Bragg reflection tracking, kinematics, and lineage for operando X-ray diffraction."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
@@ -44,10 +44,12 @@ notebook = [
   "matplotlib>=3.8",
   "pandas>=2.1",
 ]
-dev = [
-  "braggtrack[torch,notebook]",
+test = [
   "pytest>=7.4",
   "pytest-cov>=4.1",
+]
+dev = [
+  "braggtrack[torch,notebook,test]",
   "ruff>=0.4",
 ]
 

@@ -193,6 +193,170 @@ class TestEventsAndPrecursors(unittest.TestCase):
             self.assertTrue((out_dir / "events.csv").exists())
             self.assertTrue((out_dir / "precursors.csv").exists())
 
+    def test_split_detection_preserves_fast_moving_track(self) -> None:
+        """Enabling SplitMergeConfig (default max_distance=25) must never hard-cut valid LAP tracks."""
+        scans = [
+            [
+                {
+                    "label": 1,
+                    "centroid_mu": 10.0,
+                    "centroid_chi": 15.0,
+                    "centroid_d": 20.0 + 30.0 * t,
+                    "integrated_intensity": 1200.0,
+                    "voxel_count": 30,
+                    "eig_1": 1.2,
+                    "eig_2": 1.0,
+                    "eig_3": 0.8,
+                }
+            ]
+            for t in range(5)
+        ]
+        g_plain = build_tracks(scans)
+        self.assertEqual(len({int(g_plain.nodes[n]["track_id"]) for n in g_plain.nodes}), 1)
+        self.assertEqual(g_plain.number_of_edges(), 4)
+
+        g_events = build_tracks(
+            scans,
+            split_merge_config=SplitMergeConfig(max_distance=25.0, gate_d=10.0),
+        )
+        self.assertEqual(len({int(g_events.nodes[n]["track_id"]) for n in g_events.nodes}), 1)
+        self.assertEqual(g_events.number_of_edges(), 4)
+        self.assertEqual(g_events.graph["lineage_events"], [])
+
+    def test_min_semantic_similarity_without_embeddings_preserves_tracks(self) -> None:
+        """Setting min_semantic_similarity when spots have no embeddings must not cut valid tracks."""
+        scans = [
+            [
+                {
+                    "label": 1,
+                    "centroid_mu": 10.0,
+                    "centroid_chi": 15.0,
+                    "centroid_d": 20.0,
+                    "integrated_intensity": 1000.0,
+                    "voxel_count": 25,
+                    "eig_1": 1.0,
+                    "eig_2": 1.0,
+                    "eig_3": 1.0,
+                }
+            ]
+            for _ in range(5)
+        ]
+        g_no_emb = build_tracks(
+            scans,
+            split_merge_config=SplitMergeConfig(min_semantic_similarity=0.80),
+        )
+        self.assertEqual(len({int(g_no_emb.nodes[n]["track_id"]) for n in g_no_emb.nodes}), 1)
+        self.assertEqual(g_no_emb.number_of_edges(), 4)
+
+        # When embeddings ARE present and orthogonal (sim = 0 < 0.80), invalid split is rejected.
+        split_scans = [
+            [
+                {
+                    "label": 1,
+                    "centroid_mu": 10.0,
+                    "centroid_chi": 15.0,
+                    "centroid_d": 20.0,
+                    "integrated_intensity": 1000.0,
+                    "voxel_count": 25,
+                    "eig_1": 1.0,
+                    "eig_2": 1.0,
+                    "eig_3": 1.0,
+                    "embedding": np.array([1.0, 0.0, 0.0], dtype=np.float32),
+                }
+            ],
+            [
+                {
+                    "label": 1,
+                    "centroid_mu": 10.0,
+                    "centroid_chi": 13.0,
+                    "centroid_d": 20.0,
+                    "integrated_intensity": 520.0,
+                    "voxel_count": 14,
+                    "eig_1": 1.0,
+                    "eig_2": 1.0,
+                    "eig_3": 1.0,
+                    "embedding": np.array([1.0, 0.0, 0.0], dtype=np.float32),
+                },
+                {
+                    "label": 2,
+                    "centroid_mu": 10.0,
+                    "centroid_chi": 17.0,
+                    "centroid_d": 20.0,
+                    "integrated_intensity": 480.0,
+                    "voxel_count": 14,
+                    "eig_1": 1.0,
+                    "eig_2": 1.0,
+                    "eig_3": 1.0,
+                    "embedding": np.array([0.0, 1.0, 0.0], dtype=np.float32),
+                },
+            ],
+        ]
+        g_orth = build_tracks(
+            split_scans,
+            split_merge_config=SplitMergeConfig(max_distance=15.0, min_semantic_similarity=0.80),
+        )
+        self.assertEqual(g_orth.graph["lineage_events"], [])
+
+        # Mismatched embedding shapes raise a clear ValueError.
+        bad_scans = [
+            [{**split_scans[0][0], "embedding": np.ones(4, dtype=np.float32)}],
+            [
+                {**split_scans[1][0], "embedding": np.ones(4, dtype=np.float32)},
+                {**split_scans[1][1], "embedding": np.ones(8, dtype=np.float32)},
+            ],
+        ]
+        with self.assertRaises(ValueError):
+            build_tracks(bad_scans, split_merge_config=SplitMergeConfig(max_distance=15.0))
+
+    def test_dino_default_revision_is_pinned(self) -> None:
+        """Default facebook/dinov2-small loads with an explicit HuggingFace commit revision."""
+        from unittest.mock import MagicMock, patch
+
+        from braggtrack.semantic.dino import DEFAULT_DINO_MODEL, DEFAULT_DINO_REVISION, _load_hf_dino
+
+        self.assertEqual(len(DEFAULT_DINO_REVISION), 40)
+        with (
+            patch("transformers.AutoImageProcessor.from_pretrained", return_value=MagicMock()) as mock_proc,
+            patch("transformers.AutoModel.from_pretrained", return_value=MagicMock()) as mock_mod,
+        ):
+            _load_hf_dino(DEFAULT_DINO_MODEL)
+            mock_proc.assert_called_once_with(DEFAULT_DINO_MODEL, revision=DEFAULT_DINO_REVISION)
+            mock_mod.assert_called_once_with(DEFAULT_DINO_MODEL, revision=DEFAULT_DINO_REVISION)
+
+    def test_events_ckdtree_scales_to_600_spots(self) -> None:
+        """cKDTree spatial indexing keeps 600-spot 4-scan split/merge resolution well under 0.5 s."""
+        import time
+
+        rng = np.random.default_rng(42)
+        n_spots = 600
+        base_coords = rng.uniform(0.0, 1200.0, size=(n_spots, 3))
+        scans: list[list[dict]] = []
+        for _ in range(4):
+            jitter = rng.normal(0.0, 0.8, size=(n_spots, 3))
+            rows = [
+                {
+                    "label": i + 1,
+                    "centroid_mu": float(base_coords[i, 0] + jitter[i, 0]),
+                    "centroid_chi": float(base_coords[i, 1] + jitter[i, 1]),
+                    "centroid_d": float(base_coords[i, 2] + jitter[i, 2]),
+                    "integrated_intensity": 800.0,
+                    "voxel_count": 20,
+                    "eig_1": 1.2,
+                    "eig_2": 1.0,
+                    "eig_3": 0.9,
+                }
+                for i in range(n_spots)
+            ]
+            scans.append(rows)
+
+        G = build_tracks(scans)
+        t0 = time.perf_counter()
+        from braggtrack.tracking.events import resolve_splits_and_merges
+
+        resolve_splits_and_merges(G, n_scans=4, config=SplitMergeConfig(max_distance=25.0))
+        elapsed = time.perf_counter() - t0
+        self.assertLess(elapsed, 0.50, f"Expected cKDTree event resolution < 0.50 s for 600 spots, got {elapsed:.3f} s")
+
 
 if __name__ == "__main__":
     unittest.main()
