@@ -11,7 +11,7 @@ from .classical import (
 )
 from .dino_segment import DinoSegmentationResult, segment_dino
 from .features import extract_instance_table
-from .otsu import flag_outlier_frames, otsu_threshold, smooth_thresholds
+from .otsu import detector_foreground_threshold, flag_outlier_frames, otsu_threshold, smooth_thresholds
 from .pipeline import SegmentationResult, connected_components_3d, segment_volume
 from .postprocess import fill_holes_binary, merge_nearby_labels, relabel_sequential, remove_small_objects
 from .projection import label_projection_by_intensity, otsu_floor_from_mip
@@ -21,6 +21,7 @@ __all__ = [
     "DinoSegmentationResult",
     "SegmentationResult",
     "connected_components_3d",
+    "detector_foreground_threshold",
     "extract_instance_table",
     "fill_holes_binary",
     "gaussian_blur_3d",

@@ -1,4 +1,4 @@
-"""Multi-scan grain tracking with physics and semantic cost functions."""
+"""Multi-scan 4D grain tracking, lineage DAGs, kinematics, and fracture precursors."""
 
 from .assignment import associate_frames, compute_assignment_margins
 from .cost import CostFunction, GeometrySemanticCost, PositionShapeCost

@@ -58,6 +58,22 @@ def _spot_eigs(spot: dict, *, normalize_by_step: bool) -> tuple[float, float, fl
     return (e1, e2, e3)
 
 
+def _spot_widths(spot: dict, *, normalize_by_step: bool) -> tuple[float, float, float]:
+    """Return non-negative spot standard-deviation semi-axes ``sqrt(eig_k)`` (steps when normalized).
+
+    Using standard-deviation widths rather than raw covariance eigenvalues ensures
+    ``shape_d2`` has the same squared-length / squared-step dimensions as ``pos_d2``,
+    preventing ``px^4`` variance differences on large spots from overwhelming ``px^2``
+    centroid distances.
+    """
+    e1, e2, e3 = _spot_eigs(spot, normalize_by_step=normalize_by_step)
+    return (
+        math.sqrt(max(0.0, e1)),
+        math.sqrt(max(0.0, e2)),
+        math.sqrt(max(0.0, e3)),
+    )
+
+
 class PositionShapeCost:
     """Weighted position + shape cost with per-axis gating and step-scale invariance.
 
@@ -66,14 +82,22 @@ class PositionShapeCost:
     position_weight : float
         Multiplier for the position (centroid) distance term.
     shape_weight : float
-        Multiplier for the shape (eigenvalue) distance term.
+        Multiplier for the shape (root-eigenvalue semi-axis width) distance term.
     gate_mu, gate_chi, gate_d : float
         Maximum allowed displacement along each reciprocal-space axis (evaluated
         in the spot's native coordinate units). Pairs exceeding *any* gate are
         assigned ``inf`` cost.
+    max_step_mu, max_step_chi, max_step_d : float
+        Optional maximum allowed displacement measured in dimensionless voxel/frame
+        steps ``(|delta| / step)``. Works identically whether spots are calibrated
+        or uncalibrated.
+    intensity_weight : float
+        Optional multiplier for scale-free log-intensity ratio squared
+        ``(ln(max(I_i, 1)) - ln(max(I_j, 1)))**2`` enforcing approximate grain
+        volume conservation across consecutive scans. Defaults to ``0.0``.
     normalize_by_step : bool
         When ``True`` (default), calibrated physical displacements ``(deg, deg, Å)``
-        are divided by ``(step_mu, step_chi, step_d)`` and ``vox_eig_*`` are used
+        are divided by ``(step_mu, step_chi, step_d)`` and ``sqrt(vox_eig_*)`` are used
         so Euclidean association costs are dimensionless and invariant to choice
         of physical units. Uncalibrated spots (``step_* = 1``) are unchanged.
     """
@@ -86,6 +110,10 @@ class PositionShapeCost:
         gate_chi: float = math.inf,
         gate_d: float = math.inf,
         *,
+        max_step_mu: float = math.inf,
+        max_step_chi: float = math.inf,
+        max_step_d: float = math.inf,
+        intensity_weight: float = 0.0,
         normalize_by_step: bool = True,
     ) -> None:
         self.position_weight = position_weight
@@ -93,6 +121,10 @@ class PositionShapeCost:
         self.gate_mu = gate_mu
         self.gate_chi = gate_chi
         self.gate_d = gate_d
+        self.max_step_mu = float(max_step_mu)
+        self.max_step_chi = float(max_step_chi)
+        self.max_step_d = float(max_step_d)
+        self.intensity_weight = float(intensity_weight)
         self.normalize_by_step = bool(normalize_by_step)
 
     def pairwise_cost_matrix(self, spots_t: list[dict], spots_t1: list[dict]) -> np.ndarray:
@@ -108,12 +140,12 @@ class PositionShapeCost:
             [[s["centroid_mu"], s["centroid_chi"], s["centroid_d"]] for s in spots_t1],
             dtype=np.float64,
         )
-        e = np.array(
-            [_spot_eigs(s, normalize_by_step=self.normalize_by_step) for s in spots_t],
+        w_t = np.array(
+            [_spot_widths(s, normalize_by_step=self.normalize_by_step) for s in spots_t],
             dtype=np.float64,
         )
-        f = np.array(
-            [_spot_eigs(s, normalize_by_step=self.normalize_by_step) for s in spots_t1],
+        w_t1 = np.array(
+            [_spot_widths(s, normalize_by_step=self.normalize_by_step) for s in spots_t1],
             dtype=np.float64,
         )
 
@@ -122,19 +154,32 @@ class PositionShapeCost:
         dd = np.abs(x[:, 2][:, np.newaxis] - y[:, 2][np.newaxis, :])
         bad = (dmu > self.gate_mu) | (dchi > self.gate_chi) | (dd > self.gate_d)
 
+        sx = np.array([_spot_scales(s) for s in spots_t], dtype=np.float64)
+        sy = np.array([_spot_scales(s) for s in spots_t1], dtype=np.float64)
+        smu = 0.5 * (sx[:, 0][:, np.newaxis] + sy[:, 0][np.newaxis, :])
+        schi = 0.5 * (sx[:, 1][:, np.newaxis] + sy[:, 1][np.newaxis, :])
+        sd = 0.5 * (sx[:, 2][:, np.newaxis] + sy[:, 2][np.newaxis, :])
+        step_dmu = dmu / smu
+        step_dchi = dchi / schi
+        step_dd = dd / sd
+        bad |= (step_dmu > self.max_step_mu) | (step_dchi > self.max_step_chi) | (step_dd > self.max_step_d)
+
         if self.normalize_by_step:
-            sx = np.array([_spot_scales(s) for s in spots_t], dtype=np.float64)
-            sy = np.array([_spot_scales(s) for s in spots_t1], dtype=np.float64)
-            smu = 0.5 * (sx[:, 0][:, np.newaxis] + sy[:, 0][np.newaxis, :])
-            schi = 0.5 * (sx[:, 1][:, np.newaxis] + sy[:, 1][np.newaxis, :])
-            sd = 0.5 * (sx[:, 2][:, np.newaxis] + sy[:, 2][np.newaxis, :])
-            pos_d2 = (dmu / smu) ** 2 + (dchi / schi) ** 2 + (dd / sd) ** 2
+            pos_d2 = step_dmu**2 + step_dchi**2 + step_dd**2
         else:
             pos_d2 = cdist(x, y, metric="sqeuclidean")
 
-        shape_d2 = cdist(e, f, metric="sqeuclidean")
+        shape_d2 = cdist(w_t, w_t1, metric="sqeuclidean")
 
         cost = self.position_weight * pos_d2 + self.shape_weight * shape_d2
+        if self.intensity_weight > 0.0:
+            log_ia = np.log(np.maximum([float(s.get("integrated_intensity", 1.0)) for s in spots_t], 1.0))[
+                :, np.newaxis
+            ]
+            log_ib = np.log(np.maximum([float(s.get("integrated_intensity", 1.0)) for s in spots_t1], 1.0))[
+                np.newaxis, :
+            ]
+            cost = cost + self.intensity_weight * (log_ia - log_ib) ** 2
         cost[bad] = np.inf
         return cost
 
@@ -146,20 +191,30 @@ class PositionShapeCost:
         if dmu > self.gate_mu or dchi > self.gate_chi or dd > self.gate_d:
             return math.inf
 
+        smi, sci, sdi = _spot_scales(spot_i)
+        smj, scj, sdj = _spot_scales(spot_j)
+        step_dmu = dmu / (0.5 * (smi + smj))
+        step_dchi = dchi / (0.5 * (sci + scj))
+        step_dd = dd / (0.5 * (sdi + sdj))
+
+        if step_dmu > self.max_step_mu or step_dchi > self.max_step_chi or step_dd > self.max_step_d:
+            return math.inf
+
         if self.normalize_by_step:
-            smi, sci, sdi = _spot_scales(spot_i)
-            smj, scj, sdj = _spot_scales(spot_j)
-            dmu /= 0.5 * (smi + smj)
-            dchi /= 0.5 * (sci + scj)
-            dd /= 0.5 * (sdi + sdj)
+            pos_dist2 = step_dmu**2 + step_dchi**2 + step_dd**2
+        else:
+            pos_dist2 = dmu**2 + dchi**2 + dd**2
 
-        pos_dist2 = dmu**2 + dchi**2 + dd**2
+        wi = _spot_widths(spot_i, normalize_by_step=self.normalize_by_step)
+        wj = _spot_widths(spot_j, normalize_by_step=self.normalize_by_step)
+        shape_dist2 = (wi[0] - wj[0]) ** 2 + (wi[1] - wj[1]) ** 2 + (wi[2] - wj[2]) ** 2
 
-        ei = _spot_eigs(spot_i, normalize_by_step=self.normalize_by_step)
-        ej = _spot_eigs(spot_j, normalize_by_step=self.normalize_by_step)
-        shape_dist2 = (ei[0] - ej[0]) ** 2 + (ei[1] - ej[1]) ** 2 + (ei[2] - ej[2]) ** 2
-
-        return self.position_weight * pos_dist2 + self.shape_weight * shape_dist2
+        total = self.position_weight * pos_dist2 + self.shape_weight * shape_dist2
+        if self.intensity_weight > 0.0:
+            ia = max(float(spot_i.get("integrated_intensity", 1.0)), 1.0)
+            ib = max(float(spot_j.get("integrated_intensity", 1.0)), 1.0)
+            total += self.intensity_weight * (math.log(ia) - math.log(ib)) ** 2
+        return total
 
 
 class GeometrySemanticCost:
@@ -227,7 +282,8 @@ class GeometrySemanticCost:
 
         sim = a_mat @ b_mat.T
         np.clip(sim, -1.0, 1.0, out=sim)
-        out = self.cost_alpha * geo + self.cost_beta * (1.0 - sim)
+        geo_term = np.zeros_like(geo) if self.cost_alpha == 0.0 else self.cost_alpha * geo
+        out = geo_term + self.cost_beta * (1.0 - sim)
         out[~np.isfinite(geo)] = np.inf
         out[~ok_a, :] = np.inf
         out[:, ~ok_b] = np.inf
@@ -238,7 +294,7 @@ class GeometrySemanticCost:
         if not math.isfinite(g):
             return g
         if self.cost_beta == 0.0:
-            return self.cost_alpha * g
+            return 0.0 if self.cost_alpha == 0.0 else self.cost_alpha * g
         fi = spot_i.get("embedding")
         fj = spot_j.get("embedding")
         if fi is None or fj is None:
@@ -249,4 +305,5 @@ class GeometrySemanticCost:
             return math.inf
         sim = float(np.dot(a, b))
         sim = max(-1.0, min(1.0, sim))
-        return self.cost_alpha * g + self.cost_beta * (1.0 - sim)
+        geo_val = 0.0 if self.cost_alpha == 0.0 else self.cost_alpha * g
+        return geo_val + self.cost_beta * (1.0 - sim)

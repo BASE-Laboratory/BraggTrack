@@ -80,17 +80,25 @@ def _count_internal_subpeaks(masked_cube: np.ndarray, mask: np.ndarray) -> tuple
 
     vals = masked_cube[fg]
     vmax = float(vals.max())
-    if vmax <= 0.0:
+    vmin = float(vals.min())
+    if vmax <= 0.0 or vmax <= vmin:
         return 1, 0.0
 
-    smoothed = gaussian_filter(np.where(fg, masked_cube, 0.0).astype(np.float64), sigma=0.7)
+    # Subtract 85% of foreground boundary floor so additive camera pedestals do not inflate flank ratios,
+    # and scale smoothing / peak separation proportionally on large (>20 px) near-field reflections.
+    net_cube = np.where(fg, np.maximum(0.0, masked_cube.astype(np.float64) - 0.85 * max(0.0, vmin)), 0.0)
+    max_span = float(max(masked_cube.shape))
+    sigma_sub = max(0.7, 0.035 * max_span)
+    min_dist = max(2, int(round(0.12 * max_span)))
+
+    smoothed = gaussian_filter(net_cube, sigma=sigma_sub)
     smax = float(smoothed[fg].max())
     if smax <= 0.0:
         return 1, 0.0
 
     coords = peak_local_max(
         smoothed,
-        min_distance=2,
+        min_distance=min_dist,
         threshold_abs=0.25 * smax,
         labels=fg.astype(np.uint8),
         num_peaks=32,
@@ -298,9 +306,12 @@ def compute_fracture_precursors(
         eig3_0 = max(0.0, float(obs_list[0].get("eig_3", 0.0)))
         e0 = eig1_0 + eig2_0 + eig3_0
         aniso_0 = eig1_0 / eig3_0 if eig3_0 > 1e-12 else 1.0
-        c0_mu = max(1e-12, float(obs_list[0].get("cov_zz", 1.0)))
-        c0_chi = max(1e-12, float(obs_list[0].get("cov_xx", 1.0)))
-        c0_d = max(1e-12, float(obs_list[0].get("cov_yy", 1.0)))
+        q_floor_mu = max(1e-12, (float(obs_list[0].get("step_mu", 1.0)) ** 2) / 12.0)
+        q_floor_chi = max(1e-12, (float(obs_list[0].get("step_chi", 1.0)) ** 2) / 12.0)
+        q_floor_d = max(1e-12, (float(obs_list[0].get("step_d", 1.0)) ** 2) / 12.0)
+        c0_mu = max(q_floor_mu, float(obs_list[0].get("cov_zz", 1.0)))
+        c0_chi = max(q_floor_chi, float(obs_list[0].get("cov_xx", 1.0)))
+        c0_d = max(q_floor_d, float(obs_list[0].get("cov_yy", 1.0)))
         has_cov = all(k in obs_list[0] for k in ("cov_zz", "cov_xx", "cov_yy"))
         has_bbox = all(
             k in obs_list[0]
@@ -311,9 +322,9 @@ def compute_fracture_precursors(
             dx0 = max(float(obs_list[0]["bbox_max_x"]) - float(obs_list[0]["bbox_min_x"]), 1.0)
             dy0 = max(float(obs_list[0]["bbox_max_y"]) - float(obs_list[0]["bbox_min_y"]), 1.0)
             scales2 = [c0_mu / (dz0 * dz0), c0_chi / (dx0 * dx0), c0_d / (dy0 * dy0)]
-            mixed_units = (max(scales2) / max(min(scales2), 1e-18)) > 25.0
+            mixed_units = (max(scales2) / max(min(scales2), 1e-18)) > 25.0 or aniso_0 > 15.0
         else:
-            mixed_units = has_cov and aniso_0 > 50.0
+            mixed_units = has_cov and aniso_0 > 15.0
         track_scores: list[ObservationPrecursorScore] = []
 
         for obs in obs_list:
@@ -324,9 +335,9 @@ def compute_fracture_precursors(
             eig3 = max(0.0, float(obs.get("eig_3", 0.0)))
 
             if mixed_units:
-                r_mu = max(0.0, float(obs.get("cov_zz", 0.0))) / c0_mu
-                r_chi = max(0.0, float(obs.get("cov_xx", 0.0))) / c0_chi
-                r_d = max(0.0, float(obs.get("cov_yy", 0.0))) / c0_d
+                r_mu = max(q_floor_mu, float(obs.get("cov_zz", 0.0))) / c0_mu
+                r_chi = max(q_floor_chi, float(obs.get("cov_xx", 0.0))) / c0_chi
+                r_d = max(q_floor_d, float(obs.get("cov_yy", 0.0))) / c0_d
                 r_max = max(r_mu, r_chi, r_d)
                 r_min = max(min(r_mu, r_chi, r_d), 1e-9)
                 aniso = r_max / r_min

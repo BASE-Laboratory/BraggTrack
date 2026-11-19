@@ -25,12 +25,12 @@ from typing import TYPE_CHECKING, Any
 import networkx as nx
 import numpy as np
 
-from braggtrack.io.lazy import open_lazy_volume, otsu_threshold_chunked
+from braggtrack.io.lazy import detector_foreground_threshold_chunked, open_lazy_volume
 from braggtrack.io.models import AxisCalibration
 from braggtrack.io.nexus import extract_axis_calibration, extract_scan_metadata
 from braggtrack.segmentation import (
+    detector_foreground_threshold,
     extract_instance_table,
-    otsu_threshold,
     relabel_sequential,
     remove_small_objects,
     segment_classical,
@@ -103,14 +103,18 @@ class CausalStreamingTracker:
         backend: BackendName | None = "auto",
         model_name: str = DEFAULT_DINO_MODEL,
         smooth_window: int = 5,
+        bg_sigma: float = 5.0,
         seed_peak_fraction: float = 0.08,
-        seed_response_percentile: float = 0.0,
-        min_spot_voxels: int = 4,
+        seed_response_percentile: float = 95.0,
+        min_spot_voxels: int = 6,
         calibration: AxisCalibration | None = None,
         detector: DetectorGeometry | None = None,
         cost_alpha: float = 1.0,
-        cost_beta: float = 0.25,
-        max_cost: float = float("inf"),
+        cost_beta: float = 0.0,
+        max_cost: float = 900.0,
+        max_step_mu: float = 12.0,
+        max_step_chi: float = 40.0,
+        max_step_d: float = 40.0,
         max_gap: int = 0,
         split_max_distance: float = 25.0,
         precursor_config: PrecursorConfig | None = None,
@@ -118,9 +122,10 @@ class CausalStreamingTracker:
         sliding_window_scans: int | None = 24,
         swmr: bool = False,
         batch_size: int = 32,
-        use_patch_encoder: bool = True,
+        use_patch_encoder: bool = False,
     ) -> None:
         self.smooth_window = max(1, int(smooth_window))
+        self.bg_sigma = max(0.0, float(bg_sigma))
         self.seed_peak_fraction = float(seed_peak_fraction)
         self.seed_response_percentile = float(seed_response_percentile)
         self.min_spot_voxels = max(1, int(min_spot_voxels))
@@ -129,6 +134,9 @@ class CausalStreamingTracker:
         self.cost_alpha = float(cost_alpha)
         self.cost_beta = float(cost_beta)
         self.max_cost = float(max_cost)
+        self.max_step_mu = float(max_step_mu)
+        self.max_step_chi = float(max_step_chi)
+        self.max_step_d = float(max_step_d)
         self.batch_size = max(1, int(batch_size))
         self.swmr = bool(swmr)
         self.sliding_window_scans = max(6, int(sliding_window_scans)) if sliding_window_scans is not None else None
@@ -143,7 +151,13 @@ class CausalStreamingTracker:
         )
         self._patch_encoder = make_patch_encoder(backend, model_name=model_name) if use_patch_encoder else None
         self._cost_fn = GeometrySemanticCost(
-            PositionShapeCost(),
+            PositionShapeCost(
+                shape_weight=2.0,
+                intensity_weight=25.0,
+                max_step_mu=self.max_step_mu,
+                max_step_chi=self.max_step_chi,
+                max_step_d=self.max_step_d,
+            ),
             cost_alpha=self.cost_alpha,
             cost_beta=self.cost_beta,
         )
@@ -223,7 +237,7 @@ class CausalStreamingTracker:
                 file_path = p
                 default_name = p.stem
             with open_lazy_volume(file_path, swmr=self.swmr) as lazy_vol:
-                raw_thr = float(otsu_threshold_chunked(lazy_vol))
+                raw_thr = float(detector_foreground_threshold_chunked(lazy_vol, bg_sigma=self.bg_sigma))
                 vol = np.asarray(lazy_vol._dataset[()], dtype=np.float32)
             meta = extract_scan_metadata(file_path, swmr=self.swmr)
             ts = timestamp if timestamp is not None else meta.get("start_time")
@@ -238,7 +252,7 @@ class CausalStreamingTracker:
 
         arr = np.asarray(volume_or_path)
         vol = np.asarray(arr, dtype=np.float32 if arr.dtype.itemsize <= 4 else np.float64)
-        raw_thr = float(otsu_threshold(vol))
+        raw_thr = float(detector_foreground_threshold(vol, bg_sigma=self.bg_sigma))
         cal = self.calibration if self.calibration is not None else AxisCalibration()
         name = scan_name or f"scan_{len(self._scan_tables) + 1:04d}"
         return vol, raw_thr, name, timestamp, cal

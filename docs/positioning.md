@@ -36,7 +36,7 @@ flowchart LR
 
   subgraph bt["BraggTrack v0.4.0 Core & Streaming Engine"]
     IO["braggtrack.io (Auto-Calibrated LazyVolume + Operando Stimulus Sync)"]
-    TRK["braggtrack.tracking (Stabilised 3D Watershed + Batched DINOv2 + Lineage & Precursors)"]
+    TRK["braggtrack.tracking (Pedestal-Safe 3D Watershed + Jaqaman LAP + Lineage & Precursors)"]
     AUTO["braggtrack.autonomous (tell/ask/report + Heteroscedastic GP + UCB/EI Acquisition)"]
   end
 
@@ -78,7 +78,7 @@ High-resolution 4D Dark-Field X-ray Microscopy (`darfix` $(\phi, \chi)$ rocking/
 `BraggTrack v0.4.0` closes this loop via **Scout-and-Zoom**:
 
 1. **Wide-Field Scouting (`CausalStreamingTracker.tell`):**
-   - As each wide-field scouting scan finishes writing to disk (`SWMR`-safe with file-quiescence verification), `tracker.tell()` computes a strictly causal trailing-window Otsu threshold (`window = 5` scans, zero lookahead), segments 3D reflections, subtracts local detector pedestals, runs batched `DINOv2` multi-view inference (`embed_batch`), updates bounded $O(1)$ sliding-window trajectories, and evaluates persistent pre-fracture precursors (`anisotropy`, `spread_growth`, `3D sub-peak bimodality`, and `DINOv2 patch dispersion`).
+   - As each wide-field scouting scan finishes writing to disk (`SWMR`-safe with file-quiescence verification), `tracker.tell()` computes a strictly causal trailing-window pedestal-guarded threshold (`window = 5` scans, zero lookahead), segments 3D reflections, subtracts local detector pedestals, updates bounded $O(1)$ sliding-window trajectories via classical 3D geometry + intensity conservation (`cost_beta = 0.0` by default), and evaluates persistent pre-fracture precursors (`anisotropy`, `spread_growth`, and `3D sub-peak bimodality`, with optional ViT patch dispersion).
 2. **Heteroscedastic GP Trajectory Forecasting & Bayesian Acquisition (`CausalStreamingTracker.ask`):**
    - During rapid electrochemical phase transitions—such as the `H2 -> H3` $c$-axis collapse in **Ni-rich layered oxide cathodes (`LiNi0.92Mn0.04Co0.04O2`, Ni92)** above `4.15 V vs. Li/Li+`—reflections shift rapidly along $d$ ($2\theta$) and rotate in $(\mu, \chi)$ while the diffractometer reconfigures from scouting optics to the DFXM objective lens.
    - `forecast_grain_trajectory_gp()` fits an inverse-variance-weighted linear trend plus a heteroscedastic `Matérn-3/2` Gaussian Process (`scikit-learn`) weighted by analytical Poisson centroid variances $\alpha_i = \sigma_{\text{pos},i}^2$ to forecast smooth $(\mu, \chi, d)$ setpoints across uniform or irregular scan timestamps and size the zoom rocking window from posterior predictive uncertainty.

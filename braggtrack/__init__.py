@@ -1,4 +1,4 @@
-"""BraggTrack — semantic 4D kinematics and fracture tracking for operando diffraction."""
+"""BraggTrack — 4D grain kinematics, lineage, and fracture tracking for operando diffraction."""
 
 from importlib.metadata import PackageNotFoundError, version
 

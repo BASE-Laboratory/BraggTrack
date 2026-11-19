@@ -7,6 +7,8 @@ from collections.abc import Sequence
 import numpy as np
 from skimage.filters import threshold_otsu
 
+_GAUSSIAN_LOWER_QUARTILE_SCALE = 1.482602218505602
+
 
 def otsu_threshold(values) -> float:
     """Compute Otsu threshold for a 1D sequence of intensity values.
@@ -19,6 +21,26 @@ def otsu_threshold(values) -> float:
     if arr.min() == arr.max():
         return float(arr[0])
     return float(threshold_otsu(arr))
+
+
+def detector_foreground_threshold(values, *, bg_sigma: float = 5.0) -> float:
+    """Compute Otsu threshold guarded by a detector dark-pedestal read-noise floor.
+
+    In sparse 3D diffraction cubes (Bragg spots ``<< 5%`` of voxels) acquired on
+    sCMOS/CCD detectors with Gaussian dark read noise around a positive pedestal,
+    unconstrained 3D Otsu splits the symmetric background noise peak in half (~46%
+    foreground), above the 3D cubic percolation threshold (``p_c = 0.3116``).
+    Estimating ``sigma_bg`` from the lower quartile ``Q_50 - Q_25`` isolates the
+    negative-going read-noise tail without contamination from positive Bragg peaks,
+    while reducing identically to :func:`otsu_threshold` on zero-noise pedestals.
+    """
+    arr = np.asarray(values, dtype=np.float64).ravel()
+    raw_otsu = otsu_threshold(arr)
+    if bg_sigma <= 0.0 or arr.size < 4:
+        return raw_otsu
+    q25, q50 = np.percentile(arr, [25.0, 50.0])
+    sigma_bg = _GAUSSIAN_LOWER_QUARTILE_SCALE * max(0.0, float(q50 - q25))
+    return float(max(raw_otsu, float(q50) + float(bg_sigma) * sigma_bg))
 
 
 def smooth_thresholds(

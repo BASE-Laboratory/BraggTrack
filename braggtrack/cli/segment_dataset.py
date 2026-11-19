@@ -12,20 +12,20 @@ from braggtrack.cli._utils import synth_volume_from_file, write_csv, write_qc_no
 from braggtrack.io import (
     AxisCalibration,
     MissingH5DependencyError,
+    detector_foreground_threshold_chunked,
     discover_operando_scans,
     discover_primary_volume_path,
     extract_axis_calibration,
     load_primary_volume,
     open_lazy_volume,
-    otsu_threshold_chunked,
     resolve_dataset_root,
 )
 from braggtrack.segmentation import (
+    detector_foreground_threshold,
     extract_instance_table,
     fill_holes_binary,
     flag_outlier_frames,
     merge_nearby_labels,
-    otsu_threshold,
     relabel_sequential,
     remove_small_objects,
     segment_classical,
@@ -57,20 +57,26 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--seed-peak-fraction",
         type=float,
-        default=0.2,
+        default=0.12,
         help="Seed must exceed this fraction of the robust peak (p99.99) of LoG response inside the foreground",
     )
     parser.add_argument(
         "--seed-response-percentile",
         type=float,
-        default=99.95,
+        default=95.0,
         help="Seed must also exceed this percentile of the LoG response inside the foreground",
+    )
+    parser.add_argument(
+        "--bg-sigma",
+        type=float,
+        default=5.0,
+        help="Detector dark-pedestal read-noise floor multiplier above median (0 disables for raw Otsu)",
     )
     parser.add_argument(
         "--threshold-fraction",
         type=float,
         default=1.0,
-        help="Multiply Otsu threshold by this fraction to capture diffuse spots (1.0 = original Otsu)",
+        help="Multiply foreground threshold by this fraction to capture diffuse spots (1.0 = default)",
     )
     parser.add_argument(
         "--smooth-window",
@@ -193,19 +199,20 @@ def main(argv: list[str] | None = None) -> int:
             src = "synthetic_fallback"
         return vol, src, dpath, scan_cal
 
-    # First pass: compute scalar per-scan Otsu thresholds via streaming z-slabs.
+    # First pass: compute scalar per-scan thresholds via streaming z-slabs with read-noise floor.
+    bg_sig = max(0.0, float(args.bg_sigma))
     raw_thresholds: list[float] = []
     for scan in scans:
         scan_path = scan.path  # type: ignore[attr-defined]
         try:
             with open_lazy_volume(scan_path) as lazy_tmp:
-                thr = otsu_threshold_chunked(lazy_tmp)
+                thr = detector_foreground_threshold_chunked(lazy_tmp, bg_sigma=bg_sig)
         except MissingH5DependencyError:
-            thr = otsu_threshold(synth_volume_from_file(scan_path))
+            thr = detector_foreground_threshold(synth_volume_from_file(scan_path), bg_sigma=bg_sig)
         except (KeyError, ValueError):
             if not args.allow_synthetic_fallback:
                 raise
-            thr = otsu_threshold(synth_volume_from_file(scan_path))
+            thr = detector_foreground_threshold(synth_volume_from_file(scan_path), bg_sigma=bg_sig)
         raw_thresholds.append(thr * float(args.threshold_fraction))
 
     if args.method == "classical" and args.smooth_window > 1 and len(raw_thresholds) > 1:
@@ -233,6 +240,7 @@ def main(argv: list[str] | None = None) -> int:
                 min_samples=args.dino_min_samples,
                 threshold_fraction=float(args.threshold_fraction),
                 min_overlap_fraction=args.dino_min_overlap,
+                bg_sigma=bg_sig,
             )
         else:
             result = segment_classical(

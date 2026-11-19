@@ -58,9 +58,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--outdir", default="artifacts/events", help="Output directory for event/precursor reports")
     parser.add_argument(
         "--backend",
-        choices=("auto", "mock", "torch"),
-        default="auto",
-        help="Patch-encoder backend for ROI dispersion scoring (auto, mock, or torch)",
+        choices=("none", "auto", "mock", "torch"),
+        default="none",
+        help="Optional ViT patch-encoder backend for ROI dispersion ('none' uses classical 3D sub-peaks only)",
     )
     parser.add_argument("--model", default=DEFAULT_DINO_MODEL, help="HF model ID when backend=torch")
     parser.add_argument("--position-weight", type=float, default=1.0)
@@ -227,9 +227,13 @@ def main(argv: list[str] | None = None) -> int:
         for tr in track_rows:
             tr.pop("embedding", None)
 
-        resolved_backend = _resolve_backend(_requested_backend(args.backend))  # type: ignore[arg-type]
+        resolved_backend = (
+            None if args.backend == "none" else _resolve_backend(_requested_backend(args.backend))  # type: ignore[arg-type]
+        )
         patch_encoder = (
-            make_patch_encoder(resolved_backend, model_name=args.model) if (volumes and label_volumes) else None
+            make_patch_encoder(resolved_backend, model_name=args.model)
+            if (resolved_backend is not None and volumes and label_volumes)
+            else None
         )
 
         prec_cfg = PrecursorConfig(
