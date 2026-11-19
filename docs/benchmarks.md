@@ -1,6 +1,6 @@
-# BraggTrack v0.4.0 Benchmarks, ESRF-ID03 Case Study & Autonomous DFXM Replay
+# BraggTrack v0.5.0 Benchmarks, ESRF-ID03 Case Study & Autonomous DFXM Replay
 
-This document reports reproducible multi-trial quantitative benchmarks for **BraggTrack v0.4.0**, comparing **Geometry-Only**, **Deterministic Mock-Hash** (`mock`), and **Pretrained Vision Transformer** (`torch` with ungated `facebook/dinov2-small`) tracking, gap-closing, and 4D chemomechanical fracture precursor scoring, followed by an end-to-end case study on bundled operando dark-field X-ray microscopy (DFXM) data from **ESRF ID03** and a closed-loop **Autonomous "Scout-and-Zoom" Causal Replay Benchmark**.
+This document reports reproducible multi-trial quantitative benchmarks for **BraggTrack v0.5.0**, comparing **Geometry-Only**, **3D Gaussian Wasserstein–Bures Optimal Transport**, **Deterministic Mock-Hash** (`mock`), and **Pretrained Vision Transformer** (`torch` with ungated `facebook/dinov2-small`) tracking, gap-closing, and 4D chemomechanical fracture precursor scoring, followed by an end-to-end audit on bundled operando dark-field X-ray microscopy (DFXM) data from **ESRF ID03** and a closed-loop **Autonomous "Scout-and-Zoom" Causal Replay Smoke Test**.
 
 All synthetic benchmarks can be reproduced via:
 

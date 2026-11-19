@@ -51,6 +51,24 @@ def build_parser() -> argparse.ArgumentParser:
         default=1.96,
         help="Exploration weight beta for Upper Confidence Bound (ucb) acquisition (default: 1.96)",
     )
+    parser.add_argument(
+        "--forecast-domain",
+        choices=("time", "state_space"),
+        default="time",
+        help="GP trajectory forecast domain ('time' or electrochemical 'state_space' GP(Q, V) with --operando-log)",
+    )
+    parser.add_argument(
+        "--cost-model",
+        choices=("position_shape", "wasserstein_bures"),
+        default="position_shape",
+        help="Geometric association cost model ('position_shape' or 3D Gaussian 'wasserstein_bures')",
+    )
+    parser.add_argument(
+        "--drift-mode",
+        choices=("none", "consensus", "fft", "fft_kalman"),
+        default="none",
+        help="Collective rocking-band drift compensation ('none', 'consensus', 'fft', or 'fft_kalman')",
+    )
     parser.add_argument("--outdir", default="artifacts/autonomous", help="Output directory for zoom triggers & logs")
     parser.add_argument(
         "--backend",
@@ -68,6 +86,17 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--detector-json", default=None, help="Optional DetectorGeometry JSON file")
     parser.add_argument("--min-precursor-score", type=float, default=0.40, help="Precursor trigger threshold")
     parser.add_argument("--min-persistence", type=int, default=2, help="Required contiguous precursor scans")
+    parser.add_argument(
+        "--precursor-baseline-reference",
+        action="store_true",
+        help="Score precursors by intra-grain morphology deltas relative to initial baseline scans",
+    )
+    parser.add_argument(
+        "--precursor-baseline-scans",
+        type=int,
+        default=2,
+        help="Initial scans per lineage used as baseline when --precursor-baseline-reference is set",
+    )
     parser.add_argument("--cooldown-scans", type=int, default=3, help="Per-lineage cooldown scans after firing")
     parser.add_argument("--max-triggers-per-scan", type=int, default=2, help="Maximum zoom targets emitted per scan")
     parser.add_argument("--lead-scans", type=float, default=1.0, help="GP forecast lead (in scan steps)")
@@ -186,6 +215,8 @@ def main(argv: list[str] | None = None) -> int:
     prec_cfg = PrecursorConfig(
         score_threshold=float(args.min_precursor_score),
         min_persistence=int(args.min_persistence),
+        baseline_reference=bool(args.precursor_baseline_reference),
+        baseline_scans=max(1, int(args.precursor_baseline_scans)),
     )
     policy = ZoomTriggerPolicy(
         min_precursor_score=float(args.min_precursor_score),
@@ -196,6 +227,7 @@ def main(argv: list[str] | None = None) -> int:
         window_sigma=float(args.window_sigma),
         acquisition=args.acquisition,
         ucb_beta=float(args.ucb_beta),
+        forecast_domain=args.forecast_domain,
         execution_mode=args.mode,
         mu_bounds=(float(args.mu_bounds[0]), float(args.mu_bounds[1])) if args.mu_bounds else None,
         chi_bounds=(float(args.chi_bounds[0]), float(args.chi_bounds[1])) if args.chi_bounds else None,
@@ -231,6 +263,8 @@ def main(argv: list[str] | None = None) -> int:
             calibration=calibration,
             detector=detector,
             backend=args.backend,
+            cost_model=args.cost_model,
+            drift_mode=args.drift_mode,
             precursor_config=prec_cfg,
             trigger_policy=policy,
             zoom_budget=args.zoom_budget,
@@ -264,6 +298,8 @@ def main(argv: list[str] | None = None) -> int:
         model_name=args.model,
         calibration=calibration,
         detector=detector,
+        cost_model=args.cost_model,
+        drift_mode=args.drift_mode,
         precursor_config=prec_cfg,
         trigger_policy=policy,
         sliding_window_scans=int(args.sliding_window) if args.sliding_window and args.sliding_window > 0 else None,

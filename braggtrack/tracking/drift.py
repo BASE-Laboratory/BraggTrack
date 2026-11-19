@@ -152,12 +152,21 @@ def estimate_slab_shifts_fft(
     if n_spots == 0:
         return shifts, []
 
-    v0 = np.asarray(vol_t)
-    v1 = np.asarray(vol_t1)
-    if v0.ndim != 3 or v0.shape != v1.shape:
-        return shifts, []
+    s0 = getattr(vol_t, "shape", None)
+    s1 = getattr(vol_t1, "shape", None)
+    if s0 is None or s1 is None:
+        v0 = np.asarray(vol_t)
+        v1 = np.asarray(vol_t1)
+        if v0.ndim != 3 or v0.shape != v1.shape:
+            return shifts, []
+        vol_t = v0
+        vol_t1 = v1
+        nz, ny, nx = int(v0.shape[0]), int(v0.shape[1]), int(v0.shape[2])
+    else:
+        if len(s0) != 3 or tuple(int(x) for x in s0) != tuple(int(x) for x in s1):
+            return shifts, []
+        nz, ny, nx = int(s0[0]), int(s0[1]), int(s0[2])
 
-    nz, ny, nx = v0.shape
     patches = group_local_rocking_patches(
         spots_t,
         band_gap_steps=band_gap_frames,
@@ -194,8 +203,8 @@ def estimate_slab_shifts_fft(
         if z1 <= z0 or (y1 - y0) < 8 or (x1 - x0) < 8:
             continue
 
-        slab0 = v0[z0:z1, y0:y1, x0:x1]
-        slab1 = v1[z0:z1, y0:y1, x0:x1]
+        slab0 = np.asarray(vol_t[z0:z1, y0:y1, x0:x1], dtype=np.float64)
+        slab1 = np.asarray(vol_t1[z0:z1, y0:y1, x0:x1], dtype=np.float64)
         ped0 = _robust_pedestal(slab0, bg_sigma=4.0)
         ped1 = _robust_pedestal(slab1, bg_sigma=4.0)
         mip0 = np.sqrt(np.maximum(np.max(slab0, axis=0).astype(np.float64) - ped0, 0.0))

@@ -56,6 +56,21 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Optional external operando CSV/TSV/Biologic .mpt log to synchronize with diffraction scans",
     )
+    parser.add_argument(
+        "--cost-model",
+        choices=("position_shape", "wasserstein_bures"),
+        default="position_shape",
+        help="Geometric association cost model ('position_shape' or 3D Gaussian 'wasserstein_bures')",
+    )
+    parser.add_argument(
+        "--bures-weight", type=float, default=1.0, help="Bures weight when cost_model=wasserstein_bures"
+    )
+    parser.add_argument(
+        "--drift-mode",
+        choices=("none", "consensus", "fft", "fft_kalman"),
+        default="none",
+        help="Collective rocking-band drift compensation ('none', 'consensus', 'fft', or 'fft_kalman')",
+    )
     parser.add_argument("--cost-alpha", type=float, default=1.0, help="Geometry weight in association cost")
     parser.add_argument(
         "--cost-beta",
@@ -69,6 +84,17 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--precursor-threshold", type=float, default=0.40, help="Fracture precursor score threshold")
     parser.add_argument("--precursor-persistence", type=int, default=2, help="Contiguous scans required for precursor")
+    parser.add_argument(
+        "--precursor-baseline-reference",
+        action="store_true",
+        help="Score precursors by intra-grain morphology deltas relative to initial baseline scans",
+    )
+    parser.add_argument(
+        "--precursor-baseline-scans",
+        type=int,
+        default=2,
+        help="Initial scans per lineage used as baseline when --precursor-baseline-reference is set",
+    )
     parser.add_argument(
         "--detect-events",
         action=argparse.BooleanOptionalAction,
@@ -125,12 +151,17 @@ def _merge_config_overrides(args: argparse.Namespace) -> dict[str, Any]:
         "calibration_json": args.calibration_json,
         "detector_json": args.detector_json,
         "operando_log": args.operando_log,
+        "cost_model": args.cost_model,
+        "bures_weight": args.bures_weight,
+        "drift_mode": args.drift_mode,
         "cost_alpha": args.cost_alpha,
         "cost_beta": args.cost_beta,
         "max_gap": args.max_gap,
         "split_max_distance": args.split_max_distance,
         "precursor_threshold": args.precursor_threshold,
         "precursor_persistence": args.precursor_persistence,
+        "precursor_baseline_reference": bool(args.precursor_baseline_reference),
+        "precursor_baseline_scans": args.precursor_baseline_scans,
         "detect_events": bool(args.detect_events),
         "report": bool(args.report),
         "export_imaged11": args.export_imaged11,
@@ -270,6 +301,12 @@ def main(argv: list[str] | None = None) -> int:
         str(seg_dir),
         "--outdir",
         str(trk_dir),
+        "--cost-model",
+        str(cfg["cost_model"]),
+        "--bures-weight",
+        str(cfg["bures_weight"]),
+        "--drift-mode",
+        str(cfg["drift_mode"]),
         "--cost-alpha",
         str(cfg["cost_alpha"]),
         "--cost-beta",
@@ -282,7 +319,15 @@ def main(argv: list[str] | None = None) -> int:
         str(cfg["precursor_threshold"]),
         "--precursor-persistence",
         str(cfg["precursor_persistence"]),
+        "--precursor-baseline-scans",
+        str(cfg["precursor_baseline_scans"]),
     ]
+    if cfg.get("drift_mode") in ("fft", "fft_kalman"):
+        trk_argv.extend(["--dataset-root", str(root)])
+    if cfg.get("precursor_baseline_reference"):
+        trk_argv.append("--precursor-baseline-reference")
+    if cfg.get("allow_synthetic_fallback"):
+        trk_argv.append("--allow-synthetic-fallback")
     if need_embed:
         trk_argv.extend(["--embedding-dir", str(emb_dir)])
     if cfg.get("detect_events"):
@@ -312,6 +357,12 @@ def main(argv: list[str] | None = None) -> int:
             str(cfg["backend"]) if need_embed else "none",
             "--model",
             str(cfg["model"]),
+            "--cost-model",
+            str(cfg["cost_model"]),
+            "--bures-weight",
+            str(cfg["bures_weight"]),
+            "--drift-mode",
+            str(cfg["drift_mode"]),
             "--cost-alpha",
             str(cfg["cost_alpha"]),
             "--cost-beta",
@@ -324,7 +375,11 @@ def main(argv: list[str] | None = None) -> int:
             str(cfg["precursor_threshold"]),
             "--precursor-persistence",
             str(cfg["precursor_persistence"]),
+            "--precursor-baseline-scans",
+            str(cfg["precursor_baseline_scans"]),
         ]
+        if cfg.get("precursor_baseline_reference"):
+            evt_argv.append("--precursor-baseline-reference")
         if need_embed:
             evt_argv.extend(["--embedding-dir", str(emb_dir)])
         if cfg.get("allow_synthetic_fallback"):

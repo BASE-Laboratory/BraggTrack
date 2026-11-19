@@ -6,14 +6,14 @@ This document describes how the repository is structured, how data flows through
 
 ```text
 BraggTrack/
-├── braggtrack/           # Installable Python package (v0.4.0)
+├── braggtrack/           # Installable Python package (v0.5.0)
 │   ├── io/               # Discovery, darfix/BLISS auto-calibration, LazyVolume, OperandoLog, ImageD11 & NeXus export
-│   ├── segmentation/     # Classical 3D LoG+watershed, Poisson centroid errors, experimental batched DINO segmenter
-│   ├── semantic/         # Orthogonal (mu, chi, d) MIPs + batched ViT / patch encoders (DINOv2 default, DINOv3, mock)
-│   ├── tracking/         # Costs, Hungarian margin, gap closing, lineage_strain & rates, split/merge DAG, precursors
-│   ├── autonomous/       # tell/ask/report CausalStreamingTracker, heteroscedastic GP forecaster, UCB/EI ZoomTriggerPolicy
+│   ├── segmentation/     # Pedestal-safe 3D LoG+watershed, Poisson centroid errors, experimental batched DINO segmenter
+│   ├── semantic/         # Optional (--cost-beta > 0) orthogonal (mu, chi, d) MIPs + batched ViT / patch encoders
+│   ├── tracking/         # PositionShape & Wasserstein-Bures costs, slab FFT/Kalman drift, Jaqaman LAP, lineage, precursors
+│   ├── autonomous/       # tell/ask/report CausalStreamingTracker, time & state-space GP(Q, V), UCB/EI ZoomTriggerPolicy
 │   ├── viz/              # Publication plots (MIPs, Lineage, Operando dQ/dV, Precursors) + offline HTML 4D Explorer
-│   └── cli/              # Thin argparse entry points (10 CLIs incl. braggtrack-watch & braggtrack-run)
+│   └── cli/              # Thin argparse entry points (11 CLIs incl. braggtrack-watch, braggtrack-run, braggtrack-eval-archive)
 ├── data/
 │   └── sample_operando/  # Bundled ESRF-ID03 Ni-rich cathode operando scans (scan0001..scan0003)
 ├── notebooks/            # End-to-end demo and DINO vs. classical segmentation notebooks

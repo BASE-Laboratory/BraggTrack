@@ -23,11 +23,13 @@ from braggtrack.io import (
 from braggtrack.semantic import DEFAULT_DINO_MODEL, make_patch_encoder
 from braggtrack.semantic.dino import _requested_backend, _resolve_backend
 from braggtrack.tracking import (
+    CostFunction,
     GapClosingConfig,
     GeometrySemanticCost,
     PositionShapeCost,
     PrecursorConfig,
     SplitMergeConfig,
+    WassersteinBuresCost,
     build_tracks,
     compute_fracture_precursors,
     compute_tracking_metrics,
@@ -63,8 +65,21 @@ def build_parser() -> argparse.ArgumentParser:
         help="Optional ViT patch-encoder backend for ROI dispersion ('none' uses classical 3D sub-peaks only)",
     )
     parser.add_argument("--model", default=DEFAULT_DINO_MODEL, help="HF model ID when backend=torch")
+    parser.add_argument(
+        "--cost-model",
+        choices=("position_shape", "wasserstein_bures"),
+        default="position_shape",
+        help="Geometric association cost model ('position_shape' or 3D Gaussian 'wasserstein_bures')",
+    )
     parser.add_argument("--position-weight", type=float, default=1.0)
     parser.add_argument("--shape-weight", type=float, default=0.5)
+    parser.add_argument("--bures-weight", type=float, default=1.0)
+    parser.add_argument(
+        "--drift-mode",
+        choices=("none", "consensus", "fft", "fft_kalman"),
+        default="none",
+        help="Collective rocking-band drift compensation ('none', 'consensus', 'fft', or 'fft_kalman')",
+    )
     parser.add_argument("--gate-mu", type=float, default=float("inf"))
     parser.add_argument("--gate-chi", type=float, default=float("inf"))
     parser.add_argument("--gate-d", type=float, default=float("inf"))
@@ -79,6 +94,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--min-fragment-share", type=float, default=0.1)
     parser.add_argument("--precursor-threshold", type=float, default=0.40)
     parser.add_argument("--precursor-persistence", type=int, default=2)
+    parser.add_argument("--precursor-baseline-reference", action="store_true")
+    parser.add_argument("--precursor-baseline-scans", type=int, default=2)
     parser.add_argument(
         "--allow-synthetic-fallback",
         action="store_true",
@@ -94,6 +111,7 @@ def _try_load_roi_inputs(
     scan_names: list[str],
     *,
     allow_synthetic_fallback: bool,
+    load_volumes_without_labels: bool = False,
 ) -> tuple[dict[int, Any], dict[int, np.ndarray], dict[int, str | None]]:
     volumes: dict[int, Any] = {}
     label_volumes: dict[int, np.ndarray] = {}
@@ -126,7 +144,7 @@ def _try_load_roi_inputs(
 
     for idx, sname in enumerate(scan_names):
         sf = scan_by_name.get(sname)
-        if sf is None or idx not in label_volumes:
+        if sf is None or (idx not in label_volumes and not load_volumes_without_labels):
             continue
         try:
             vol: LazyVolume = stack.enter_context(open_lazy_volume(sf.path))
@@ -136,7 +154,7 @@ def _try_load_roi_inputs(
             if not allow_synthetic_fallback:
                 continue
             vol = LazyVolume.from_array(synth_volume_from_file(sf.path))
-        if vol.shape == label_volumes[idx].shape:
+        if idx not in label_volumes or vol.shape == label_volumes[idx].shape:
             volumes[idx] = vol
 
     return volumes, label_volumes, timestamps
@@ -188,16 +206,27 @@ def main(argv: list[str] | None = None) -> int:
             used_scan_dirs,
             scan_names,
             allow_synthetic_fallback=bool(args.allow_synthetic_fallback),
+            load_volumes_without_labels=args.drift_mode in ("fft", "fft_kalman"),
         )
 
-        geo = PositionShapeCost(
-            position_weight=args.position_weight,
-            shape_weight=args.shape_weight,
-            gate_mu=args.gate_mu,
-            gate_chi=args.gate_chi,
-            gate_d=args.gate_d,
-        )
-        cost_fn = (
+        geo: CostFunction
+        if args.cost_model == "wasserstein_bures":
+            geo = WassersteinBuresCost(
+                position_weight=args.position_weight,
+                bures_weight=args.bures_weight,
+                gate_mu=args.gate_mu,
+                gate_chi=args.gate_chi,
+                gate_d=args.gate_d,
+            )
+        else:
+            geo = PositionShapeCost(
+                position_weight=args.position_weight,
+                shape_weight=args.shape_weight,
+                gate_mu=args.gate_mu,
+                gate_chi=args.gate_chi,
+                gate_d=args.gate_d,
+            )
+        cost_fn: CostFunction = (
             GeometrySemanticCost(geo, cost_alpha=args.cost_alpha, cost_beta=args.cost_beta)
             if args.cost_beta != 0.0
             else geo
@@ -220,6 +249,8 @@ def main(argv: list[str] | None = None) -> int:
             gap_closing_config=gap_cfg,
             split_merge_config=sm_cfg,
             scan_timestamps=scan_timestamps or None,
+            drift_mode=args.drift_mode,
+            volumes=volumes or None,
         )
         metrics = compute_tracking_metrics(G, n_scans=len(scan_tables))
         lineage_events = list(G.graph.get("lineage_events", []))
@@ -227,24 +258,28 @@ def main(argv: list[str] | None = None) -> int:
         for tr in track_rows:
             tr.pop("embedding", None)
 
+        has_roi_labels = bool(volumes and label_volumes)
+        roi_volumes = {k: v for k, v in volumes.items() if k in label_volumes} if has_roi_labels else None
         resolved_backend = (
             None if args.backend == "none" else _resolve_backend(_requested_backend(args.backend))  # type: ignore[arg-type]
         )
         patch_encoder = (
             make_patch_encoder(resolved_backend, model_name=args.model)
-            if (resolved_backend is not None and volumes and label_volumes)
+            if (resolved_backend is not None and roi_volumes and label_volumes)
             else None
         )
 
         prec_cfg = PrecursorConfig(
             score_threshold=args.precursor_threshold,
             min_persistence=max(1, args.precursor_persistence),
+            baseline_reference=bool(args.precursor_baseline_reference),
+            baseline_scans=max(1, int(args.precursor_baseline_scans)),
         )
         candidates, obs_scores = compute_fracture_precursors(
             track_rows,
             prec_cfg,
-            volumes=volumes or None,
-            label_volumes=label_volumes or None,
+            volumes=roi_volumes,
+            label_volumes=label_volumes if roi_volumes else None,
             patch_encoder=patch_encoder,
             lineage_events=lineage_events,
         )
@@ -277,13 +312,15 @@ def main(argv: list[str] | None = None) -> int:
         "schema_version": "events.v1",
         "scan_names": scan_names,
         "n_scans": len(scan_tables),
+        "cost_model": args.cost_model,
+        "drift_mode": args.drift_mode,
         "total_tracks": metrics["total_tracks"],
         "gap_closed_count": metrics["gap_closed_count"],
         "split_count": metrics["split_count"],
         "merge_count": metrics["merge_count"],
         "event_count": len(event_rows),
         "precursor_candidate_count": len(prec_rows),
-        "roi_dispersion_enabled": bool(volumes and label_volumes),
+        "roi_dispersion_enabled": bool(roi_volumes and label_volumes),
         "backend": resolved_backend if patch_encoder is not None else None,
         "model": (args.model if resolved_backend == "torch" else "mock-hash") if patch_encoder is not None else None,
         "top_precursor_track_id": candidates[0].track_id if candidates else None,
