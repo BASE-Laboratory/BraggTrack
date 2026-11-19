@@ -4,25 +4,34 @@ from __future__ import annotations
 
 import argparse
 import json
+from contextlib import ExitStack
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 
-from braggtrack.cli._utils import load_feature_csv, write_csv, write_qc_notebook
+from braggtrack.cli._utils import load_feature_csv, synth_volume_from_file, write_csv, write_qc_notebook
 from braggtrack.io import (
     AxisCalibration,
+    BeamlineAdapter,
     DetectorGeometry,
+    LazyVolume,
+    MissingH5DependencyError,
     annotate_crystallographic_columns,
+    discover_operando_scans,
     export_imaged11_flt,
     export_nexus_process,
+    open_lazy_volume,
+    resolve_dataset_root,
 )
 from braggtrack.tracking import (
+    CostFunction,
     GapClosingConfig,
     GeometrySemanticCost,
     PositionShapeCost,
     PrecursorConfig,
     SplitMergeConfig,
+    WassersteinBuresCost,
     build_tracks,
     compute_fracture_precursors,
     compute_grain_kinematics,
@@ -42,8 +51,31 @@ def build_parser() -> argparse.ArgumentParser:
         "root", nargs="?", default="artifacts/segmentation", help="Directory with per-scan feature CSVs"
     )
     parser.add_argument("--outdir", default="artifacts/tracking", help="Output artifact directory")
+    parser.add_argument(
+        "--dataset-root",
+        default=None,
+        help="Optional raw HDF5 scan directory for lazy rocking-slab FFT drift registration (--drift-mode fft/fft_kalman)",
+    )
+    parser.add_argument(
+        "--cost-model",
+        choices=("position_shape", "wasserstein_bures"),
+        default="position_shape",
+        help="Geometric association cost model ('position_shape' or 3D Gaussian 'wasserstein_bures')",
+    )
     parser.add_argument("--position-weight", type=float, default=1.0)
     parser.add_argument("--shape-weight", type=float, default=0.5)
+    parser.add_argument(
+        "--bures-weight",
+        type=float,
+        default=1.0,
+        help="Bures 3D covariance transport weight when --cost-model=wasserstein_bures",
+    )
+    parser.add_argument(
+        "--drift-mode",
+        choices=("none", "consensus", "fft", "fft_kalman"),
+        default="none",
+        help="Collective rocking-band drift compensation ('none', 'consensus', 'fft', or 'fft_kalman')",
+    )
     parser.add_argument("--gate-mu", type=float, default=float("inf"))
     parser.add_argument("--gate-chi", type=float, default=float("inf"))
     parser.add_argument("--gate-d", type=float, default=float("inf"))
@@ -101,6 +133,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="Minimum contiguous scans above threshold to rank as a fracture precursor",
     )
     parser.add_argument(
+        "--precursor-baseline-reference",
+        action="store_true",
+        help="Score precursors by intra-grain morphology deltas relative to initial baseline scans",
+    )
+    parser.add_argument(
+        "--precursor-baseline-scans",
+        type=int,
+        default=2,
+        help="Number of initial scans per lineage used as baseline when --precursor-baseline-reference is set",
+    )
+    parser.add_argument(
         "--detector-json",
         default=None,
         help="Optional DetectorGeometry JSON path to annotate (omega, 2theta, eta, d, |Q|) columns",
@@ -114,6 +157,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--export-nexus",
         default=None,
         help="Optional path to write a NeXus NXprocess HDF5 summary file",
+    )
+    parser.add_argument(
+        "--allow-synthetic-fallback",
+        action="store_true",
+        help="Allow deterministic synthetic volume fallback when opening --dataset-root HDF5 stubs",
     )
     return parser
 
@@ -223,15 +271,25 @@ def main(argv: list[str] | None = None) -> int:
                 return 1
             _merge_embeddings(rows, _load_embeddings_npz(npz))
 
-    geo = PositionShapeCost(
-        position_weight=args.position_weight,
-        shape_weight=args.shape_weight,
-        gate_mu=args.gate_mu,
-        gate_chi=args.gate_chi,
-        gate_d=args.gate_d,
-    )
+    geo: CostFunction
+    if args.cost_model == "wasserstein_bures":
+        geo = WassersteinBuresCost(
+            position_weight=args.position_weight,
+            bures_weight=args.bures_weight,
+            gate_mu=args.gate_mu,
+            gate_chi=args.gate_chi,
+            gate_d=args.gate_d,
+        )
+    else:
+        geo = PositionShapeCost(
+            position_weight=args.position_weight,
+            shape_weight=args.shape_weight,
+            gate_mu=args.gate_mu,
+            gate_chi=args.gate_chi,
+            gate_d=args.gate_d,
+        )
     if args.cost_beta != 0.0:
-        cost_fn = GeometrySemanticCost(
+        cost_fn: CostFunction = GeometrySemanticCost(
             geo,
             cost_alpha=args.cost_alpha,
             cost_beta=args.cost_beta,
@@ -250,13 +308,48 @@ def main(argv: list[str] | None = None) -> int:
         if args.detect_events
         else None
     )
-    G = build_tracks(
-        scan_tables,
-        cost_fn=cost_fn,
-        max_cost=args.max_cost,
-        gap_closing_config=gap_cfg,
-        split_merge_config=sm_cfg,
-    )
+
+    with ExitStack() as stack:
+        volumes: dict[int, LazyVolume] = {}
+        scan_timestamps: dict[int, str | None] = {}
+        if args.dataset_root and args.drift_mode in ("fft", "fft_kalman"):
+            try:
+                ds_root = resolve_dataset_root(args.dataset_root)
+                scans_fs = {s.scan_name: s for s in discover_operando_scans(ds_root)}
+                try:
+                    seq = BeamlineAdapter(ds_root).build_sequence()
+                    meta_by_name = {m.scan_name: m for m in seq.scans}
+                    for idx, sname in enumerate(scan_names):
+                        m = meta_by_name.get(sname)
+                        if m and m.start_time:
+                            scan_timestamps[idx] = m.start_time.isoformat()
+                except Exception:
+                    pass
+                for idx, sname in enumerate(scan_names):
+                    sf = scans_fs.get(sname)
+                    if sf is None:
+                        continue
+                    try:
+                        volumes[idx] = stack.enter_context(open_lazy_volume(sf.path))
+                    except MissingH5DependencyError:
+                        volumes[idx] = LazyVolume.from_array(synth_volume_from_file(sf.path))
+                    except (KeyError, ValueError):
+                        if args.allow_synthetic_fallback:
+                            volumes[idx] = LazyVolume.from_array(synth_volume_from_file(sf.path))
+            except Exception:
+                volumes = {}
+
+        G = build_tracks(
+            scan_tables,
+            cost_fn=cost_fn,
+            max_cost=args.max_cost,
+            gap_closing_config=gap_cfg,
+            split_merge_config=sm_cfg,
+            scan_timestamps=scan_timestamps or None,
+            drift_mode=args.drift_mode,
+            volumes=volumes or None,
+        )
+
     metrics = compute_tracking_metrics(G, n_scans=len(scan_tables))
 
     active_cal = _detect_calibration(used_scan_dirs)
@@ -289,6 +382,8 @@ def main(argv: list[str] | None = None) -> int:
             PrecursorConfig(
                 score_threshold=args.precursor_threshold,
                 min_persistence=max(1, args.precursor_persistence),
+                baseline_reference=bool(args.precursor_baseline_reference),
+                baseline_scans=max(1, int(args.precursor_baseline_scans)),
             ),
             lineage_events=lineage_events,
         )
@@ -302,6 +397,8 @@ def main(argv: list[str] | None = None) -> int:
         **metrics,
         "calibrated_axes": calibrated_axes,
         "schema_version": schema_version,
+        "cost_model": args.cost_model,
+        "drift_mode": args.drift_mode,
         "cost_alpha": args.cost_alpha,
         "cost_beta": args.cost_beta,
         "max_gap": args.max_gap,

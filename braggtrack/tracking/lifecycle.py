@@ -7,7 +7,6 @@ from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
 
 import networkx as nx
-import numpy as np
 
 from .assignment import associate_frames, compute_assignment_margins
 from .cost import CostFunction, PositionShapeCost
@@ -44,7 +43,7 @@ def build_tracks(
     split_merge_config: SplitMergeConfig | None = None,
     scan_timestamps: dict[int, str | None] | None = None,
     drift_mode: DriftMode = "none",
-    volumes: Sequence[np.ndarray] | dict[int, np.ndarray] | None = None,
+    volumes: Sequence[Any] | dict[int, Any] | None = None,
     precomputed_pair_shifts: dict[int, list[tuple[float, float, float]]] | None = None,
     scan_elapsed_s: dict[int, float] | None = None,
 ) -> nx.DiGraph:
@@ -64,7 +63,7 @@ def build_tracks(
     if n_scans == 0:
         return G
 
-    vol_map: dict[int, np.ndarray] = {}
+    vol_map: dict[int, Any] = {}
     if isinstance(volumes, dict):
         vol_map = volumes
     elif volumes is not None:

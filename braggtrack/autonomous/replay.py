@@ -14,10 +14,11 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 import numpy as np
 
+from braggtrack.tracking.drift import DriftMode
 from braggtrack.tracking.kinematics import compute_grain_kinematics
 from braggtrack.tracking.precursors import PrecursorConfig
 
@@ -175,6 +176,8 @@ def evaluate_causal_replay(
     calibration: AxisCalibration | None = None,
     detector: DetectorGeometry | None = None,
     backend: BackendName | None = "mock",
+    cost_model: Literal["position_shape", "wasserstein_bures"] = "position_shape",
+    drift_mode: DriftMode = "none",
     precursor_config: PrecursorConfig | None = None,
     trigger_policy: ZoomTriggerPolicy | None = None,
     zoom_budget: int | None = None,
@@ -186,6 +189,8 @@ def evaluate_causal_replay(
         backend=backend,
         calibration=calibration,
         detector=detector,
+        cost_model=cost_model,
+        drift_mode=drift_mode,
         precursor_config=precursor_config,
         trigger_policy=pol,
     )

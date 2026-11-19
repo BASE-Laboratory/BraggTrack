@@ -8,17 +8,17 @@ Rather than replacing upstream beamline acquisition engines (`BLISS`/`LIMA`, `Ew
 
 ## 1. Software Ecosystem Comparison Matrix
 
-| Capability / Design Axis | **`BraggTrack` (`v0.4.0`)** | **`darfix`** *(Garriga Ferrer et al., 2023)* | **`ImageD11` / `GrainSpotter`** *(Wright, 2023; Schmidt, 2014)* | **`HEXRD`** *(Bernier et al., 2011)* | **`BraggNN`** *(Liu et al., 2022)* | **`TrackMate 7` / `LapTrack`** *(Ershov et al., 2022; Fukai & Kawaguchi, 2023)* |
+| Capability / Design Axis | **`BraggTrack` (`v0.5.0`)** | **`darfix`** *(Garriga Ferrer et al., 2023)* | **`ImageD11` / `GrainSpotter`** *(Wright, 2023; Schmidt, 2014)* | **`HEXRD`** *(Bernier et al., 2011)* | **`BraggNN`** *(Liu et al., 2022)* | **`TrackMate 7` / `LapTrack`** *(Ershov et al., 2022; Fukai & Kawaguchi, 2023)* |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
 | **Primary Scientific Domain** | Operando 4D reciprocal-space & near-field DFXM grain dynamics | Single-reflection real-space DFXM rocking/mosaicity mapping | Polycrystalline 3DXRD peak harvesting & grain orientation indexing | FF-HEDM / nf-HEDM orientation & elastic strain tensor fitting | Fast neural 2D Bragg peak sub-pixel localization | Live-cell bioimage particle & mitosis lineage tracking |
 | **Input Representation** | Time-series of 3D $(\mu, \chi, d)$ or $(\omega, y, x)$ NeXus/HDF5 cubes (`LazyVolume`) | 3D/4D real-space DFXM detector stacks (`NXdata` `@signal`/`@axes`) | Thresholded 2D/3D diffraction peak tables (`.flt`) | Raw 2D detector frames + instrument geometry YAML | Small 2D detector patches around candidate peaks | 2D/3D fluorescence microscopy time-lapse stacks |
-| **3D Reflection Segmentation** | Stabilised multi-scan chunked Otsu + `float32` 3D LoG + `h`-maxima watershed | Background subtraction, ROI cropping & pixel-wise Gaussian moments | Connected-component / threshold peak search | Omega-wedge peak extraction around virtual grain reflections | Patch-level CNN regression (requires upstream patch cropper) | LoG / DoG / StarDist / Cellpose cell detectors |
-| **Foundation Vision Descriptors** | Batched 3-view orthogonal MIP `DINOv2` / `DINOv3` global & patch tokens | PCA / NMF blind source separation on rocking curves | None (scalar centroids & integrated intensities) | None | Supervised CNN latent features (2D patch only) | Hand-crafted cell morphology / CNN embeddings (2D) |
-| **Multi-Scan Gap Closing & Lineage** | Jaqaman LAP gap closing + intensity-conserved `1 -> 2+` fracture splits & `2+ -> 1` merges | Per-scan static analysis (no cross-scan grain identity) | Per-scan grain indexing (post-hoc orientation matching required) | Per-scan grain fitting | Frame-by-frame localization only | Mitosis `1 -> 2` division (no Bragg intensity conservation or $d$-strain physics) |
+| **3D Reflection Segmentation** | Pedestal-safe (`median + k·MAD`) chunked Otsu + `float32` 3D LoG + `h`-maxima watershed | Background subtraction, ROI cropping & pixel-wise Gaussian moments | Connected-component / threshold peak search | Omega-wedge peak extraction around virtual grain reflections | Patch-level CNN regression (requires upstream patch cropper) | LoG / DoG / StarDist / Cellpose cell detectors |
+| **Morphological & Vision Descriptors** | 3D Gaussian Wasserstein–Bures OT (`--cost-model`) + optional 3-view `DINOv2` / `DINOv3` (`--cost-beta > 0`) | PCA / NMF blind source separation on rocking curves | None (scalar centroids & integrated intensities) | None | Supervised CNN latent features (2D patch only) | Hand-crafted cell morphology / CNN embeddings (2D) |
+| **Multi-Scan Gap Closing & Lineage** | Rocking-slab FFT/Kalman drift + Jaqaman LAP + log-intensity `1 -> 2+` splits, `2+ -> 1` merges & `reversible_overlap` | Per-scan static analysis (no cross-scan grain identity) | Per-scan grain indexing (post-hoc orientation matching required) | Per-scan grain fitting | Frame-by-frame localization only | Mitosis `1 -> 2` division (no Bragg intensity conservation or $d$-strain physics) |
 | **Uncertainty & Ancestor Strain** | Analytical Poisson + quantization $\sigma_d, \sigma_\varepsilon$, `assignment_margin`, ancestor `lineage_strain` | Rocking-curve fit residuals | Peak centroid covariance | Least-squares strain tensor covariance | Sub-pixel regression spread | None (spatial pixel coordinates) |
-| **Pre-Fracture Precursor Scoring** | Persistent 3D eigenvalue anisotropy, spread growth, 3D sub-peak bimodality & ViT patch dispersion | Per-pixel mosaicity & KAM maps (after high-res zoom) | None | Intragranular peak broadening (post-fit) | None | None |
+| **Pre-Fracture Precursor Scoring** | Baseline-referenced 3D anisotropy, skewness/kurtosis, spread growth, 3D sub-peaks & optional ViT patch dispersion | Per-pixel mosaicity & KAM maps (after high-res zoom) | None | Intragranular peak broadening (post-fit) | None | None |
 | **Operando Stimulus Sync** | Native `CSV`/`TSV` & Biologic `.mpt` sync ($E(t), I(t), Q(t)$, regularized $\mathrm{d}Q/\mathrm{d}V$, $\partial\varepsilon/\partial V$) | External user scripting | External user scripting | External user scripting | None | None |
-| **Autonomous Beamline Feedback** | `tell / ask / report` causal agent (`braggtrack-watch`) + GP-forecasted `zoom_triggers.jsonl` | Offline / Ewoks batch post-processing of acquired DFXM zoom scans | Offline / batch indexing | Offline / HPC batch fitting | Edge-AI peak streaming (no grain lineage or zoom trigger) | Offline microscopy analysis |
+| **Autonomous Beamline Feedback** | `tell / ask / report` causal agent (`braggtrack-watch`) + time/state-space `GP(Q, V)` `zoom_triggers.jsonl` | Offline / Ewoks batch post-processing of acquired DFXM zoom scans | Offline / batch indexing | Offline / HPC batch fitting | Edge-AI peak streaming (no grain lineage or zoom trigger) | Offline microscopy analysis |
 
 ---
 
@@ -34,10 +34,10 @@ flowchart LR
     EC["Potentiostat / Load Frame (.mpt, .csv, .tsv)"]
   end
 
-  subgraph bt["BraggTrack v0.4.0 Core & Streaming Engine"]
+  subgraph bt["BraggTrack v0.5.0 Core & Streaming Engine"]
     IO["braggtrack.io (Auto-Calibrated LazyVolume + Operando Stimulus Sync)"]
-    TRK["braggtrack.tracking (Pedestal-Safe 3D Watershed + Jaqaman LAP + Lineage & Precursors)"]
-    AUTO["braggtrack.autonomous (tell/ask/report + Heteroscedastic GP + UCB/EI Acquisition)"]
+    TRK["braggtrack.tracking (Pedestal-Safe 3D Watershed + Slab FFT/Kalman + Bures OT + Lineage)"]
+    AUTO["braggtrack.autonomous (tell/ask/report + Heteroscedastic GP(t) / GP(Q,V) + UCB/EI)"]
   end
 
   subgraph downstream["Downstream Indexing, Visualization & Closed-Loop Control"]
@@ -75,13 +75,13 @@ flowchart LR
 
 High-resolution 4D Dark-Field X-ray Microscopy (`darfix` $(\phi, \chi)$ rocking/mosaicity mapping with an X-ray objective lens) resolves intragranular dislocation walls and strain gradients at ~`50–100 nm` spatial resolution, but has a narrow field of view (single grain, ~`20–80 µm`) and requires minutes per 3D/4D scan. Conversely, wide-field reciprocal-space / near-field scouting monitors `50–200+` grains simultaneously across an electrode, but cannot resolve internal sub-grain microstructure until after catastrophic particle fracture (`1 -> 2+` split) has already occurred.
 
-`BraggTrack v0.4.0` closes this loop via **Scout-and-Zoom**:
+`BraggTrack v0.5.0` closes this loop via **Scout-and-Zoom**:
 
 1. **Wide-Field Scouting (`CausalStreamingTracker.tell`):**
-   - As each wide-field scouting scan finishes writing to disk (`SWMR`-safe with file-quiescence verification), `tracker.tell()` computes a strictly causal trailing-window pedestal-guarded threshold (`window = 5` scans, zero lookahead), segments 3D reflections, subtracts local detector pedestals, updates bounded $O(1)$ sliding-window trajectories via classical 3D geometry + intensity conservation (`cost_beta = 0.0` by default), and evaluates persistent pre-fracture precursors (`anisotropy`, `spread_growth`, and `3D sub-peak bimodality`, with optional ViT patch dispersion).
-2. **Heteroscedastic GP Trajectory Forecasting & Bayesian Acquisition (`CausalStreamingTracker.ask`):**
-   - During rapid electrochemical phase transitions—such as the `H2 -> H3` $c$-axis collapse in **Ni-rich layered oxide cathodes (`LiNi0.92Mn0.04Co0.04O2`, Ni92)** above `4.15 V vs. Li/Li+`—reflections shift rapidly along $d$ ($2\theta$) and rotate in $(\mu, \chi)$ while the diffractometer reconfigures from scouting optics to the DFXM objective lens.
-   - `forecast_grain_trajectory_gp()` fits an inverse-variance-weighted linear trend plus a heteroscedastic `Matérn-3/2` Gaussian Process (`scikit-learn`) weighted by analytical Poisson centroid variances $\alpha_i = \sigma_{\text{pos},i}^2$ to forecast smooth $(\mu, \chi, d)$ setpoints across uniform or irregular scan timestamps and size the zoom rocking window from posterior predictive uncertainty.
+   - As each wide-field scouting scan finishes writing to disk (`SWMR`-safe with file-quiescence verification), `tracker.tell()` computes a strictly causal trailing-window pedestal-guarded threshold (`window = 5` scans, zero lookahead), segments 3D reflections, subtracts local detector pedestals, compensates collective rocking-slab drift (`--drift-mode`), updates bounded $O(1)$ sliding-window trajectories via classical 3D geometry or 3D Gaussian Wasserstein–Bures optimal transport (`--cost-model`, `cost_beta = 0.0` by default), and evaluates persistent pre-fracture precursors (`--precursor-baseline-reference`, with optional ViT patch dispersion).
+2. **Heteroscedastic Time & State-Space GP Trajectory Forecasting (`CausalStreamingTracker.ask`):**
+   - During rapid electrochemical phase transitions—such as the `H2 -> H3` $c$-axis collapse in **Ni-rich layered oxide cathodes (`LiNi0.92Mn0.04Co0.04O2`, Ni92)** above `4.15 V vs. Li/Li+`—reflections shift nonlinearly in wall-clock time along $d$ ($2\theta$) and rotate in $(\mu, \chi)$, whereas lattice contraction tracks cumulative delithiation state $(Q, V)$ far more smoothly.
+   - `forecast_grain_trajectory_gp()` fits an inverse-variance-weighted linear trend plus a heteroscedastic `Matérn-3/2` Gaussian Process (`scikit-learn`) in either wall-clock time (`--forecast-domain time`) or causal electrochemical state space (`--forecast-domain state_space`, `GP(Q, V)` when `--operando-log` is supplied), weighted by analytical Poisson centroid variances $\alpha_i = \sigma_{\text{pos},i}^2$.
    - Candidate grains are ranked with standard Bayesian acquisition functions (`ucb`, `ei`, or `max_variance`), with optional closed-loop conditioning on measured high-resolution DFXM outcomes via `tracker.tell_zoom_outcome(track_id, outcome)`.
 3. **BLISS / Ewoks JSONL Trigger Stream (`zoom_triggers.jsonl`):**
    - Triggered targets are clamped to diffractometer soft limits and appended to `zoom_triggers.jsonl` using schema `bliss_dfxm_zoom.v1`, ready for consumption by an ESRF BLISS macro, Ewoks workflow, or `Bluesky` plan.

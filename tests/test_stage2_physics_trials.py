@@ -543,3 +543,117 @@ def test_blind_annotator_gt_scorer_and_eval_archive_cli(tmp_path: Path) -> None:
     assert rep["has_operando_stimulus"] is True
     assert rep["has_blind_gt_links"] is True
     assert len(rep["tracking_grid"]) == 8
+
+
+def test_estimate_slab_shifts_fft_supports_lazy_volume() -> None:
+    """LazyVolume inputs must stream bounded rocking slabs identically to dense ndarrays."""
+    from braggtrack.io import LazyVolume
+    from braggtrack.tracking import estimate_slab_shifts_fft
+
+    rng = np.random.default_rng(19)
+    v0 = 180.0 + rng.normal(0.0, 2.0, size=(20, 64, 64))
+    v1 = 180.0 + rng.normal(0.0, 2.0, size=(20, 64, 64))
+    zz, yy, xx = np.ogrid[:20, :64, :64]
+    for cy, cx in ((20.0, 18.0), (24.0, 32.0)):
+        v0 += 650.0 * np.exp(-0.5 * (((zz - 10.0) / 1.5) ** 2 + ((yy - cy) / 2.0) ** 2 + ((xx - cx) / 2.0) ** 2))
+        v1 += 650.0 * np.exp(
+            -0.5 * (((zz - 10.0) / 1.5) ** 2 + ((yy - (cy + 9.0)) / 2.0) ** 2 + ((xx - (cx - 6.0)) / 2.0) ** 2)
+        )
+    spots_t = [
+        {
+            "label": 1,
+            "centroid_mu": 10.0,
+            "centroid_chi": 18.0,
+            "centroid_d": 20.0,
+            "voxel_count": 40,
+            "eig_1": 4.0,
+            "eig_2": 4.0,
+            "eig_3": 2.2,
+            "bbox_min_z": 8,
+            "bbox_max_z": 12,
+            "bbox_min_y": 16,
+            "bbox_max_y": 24,
+            "bbox_min_x": 14,
+            "bbox_max_x": 22,
+        },
+        {
+            "label": 2,
+            "centroid_mu": 10.0,
+            "centroid_chi": 32.0,
+            "centroid_d": 24.0,
+            "voxel_count": 40,
+            "eig_1": 4.0,
+            "eig_2": 4.0,
+            "eig_3": 2.2,
+            "bbox_min_z": 8,
+            "bbox_max_z": 12,
+            "bbox_min_y": 20,
+            "bbox_max_y": 28,
+            "bbox_min_x": 28,
+            "bbox_max_x": 36,
+        },
+    ]
+    shifts_dense, recs_dense = estimate_slab_shifts_fft(v0, v1, spots_t)
+    shifts_lazy, recs_lazy = estimate_slab_shifts_fft(
+        LazyVolume.from_array(v0),
+        LazyVolume.from_array(v1),
+        spots_t,
+    )
+    assert recs_lazy == recs_dense
+    assert np.allclose(shifts_lazy, shifts_dense)
+    assert shifts_lazy[0][1] == pytest.approx(-6.0, abs=0.4)
+    assert shifts_lazy[0][2] == pytest.approx(9.0, abs=0.4)
+
+
+def test_cli_stage2_flags_in_run_pipeline_and_watch_replay(tmp_path: Path) -> None:
+    """braggtrack-run and braggtrack-watch must accept and propagate Stage 2 physics flags."""
+    from braggtrack.cli import run_pipeline, watch_autonomous
+
+    root = Path(sample_operando_root())
+    pipe_out = tmp_path / "pipe_stage2"
+    rc_pipe = run_pipeline.main(
+        [
+            str(root),
+            "--outdir",
+            str(pipe_out),
+            "--cost-model",
+            "wasserstein_bures",
+            "--drift-mode",
+            "fft_kalman",
+            "--precursor-baseline-reference",
+        ]
+    )
+    assert rc_pipe == 0
+    trk_sum = json.loads((pipe_out / "tracking" / "tracking_summary.json").read_text(encoding="utf-8"))
+    evt_sum = json.loads((pipe_out / "events" / "events_summary.json").read_text(encoding="utf-8"))
+    assert trk_sum["cost_model"] == "wasserstein_bures"
+    assert trk_sum["drift_mode"] == "fft_kalman"
+    assert evt_sum["cost_model"] == "wasserstein_bures"
+    assert evt_sum["drift_mode"] == "fft_kalman"
+
+    op_csv = tmp_path / "operando.csv"
+    op_csv.write_text(
+        "elapsed_s,voltage_v,current_ma,capacity_mah_g\n0,3.70,1.0,0.0\n60,3.78,1.0,12.0\n120,3.85,1.0,24.0\n",
+        encoding="utf-8",
+    )
+    watch_out = tmp_path / "watch_stage2"
+    rc_watch = watch_autonomous.main(
+        [
+            str(root),
+            "--mode",
+            "replay",
+            "--outdir",
+            str(watch_out),
+            "--operando-log",
+            str(op_csv),
+            "--cost-model",
+            "wasserstein_bures",
+            "--drift-mode",
+            "consensus",
+            "--forecast-domain",
+            "state_space",
+            "--precursor-baseline-reference",
+        ]
+    )
+    assert rc_watch == 0
+    assert (watch_out / "replay_summary.json").exists()
