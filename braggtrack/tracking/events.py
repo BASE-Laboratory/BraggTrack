@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Literal
 
 import networkx as nx
@@ -11,7 +11,7 @@ import numpy as np
 
 from .cost import _spot_scales
 
-SplitSubtype = Literal["mechanical_split", "phase_split", "mixed_split"]
+SplitSubtype = Literal["mechanical_split", "phase_split", "mixed_split", "reversible_overlap"]
 
 
 @dataclass(frozen=True)
@@ -28,6 +28,7 @@ class SplitMergeConfig:
     min_semantic_similarity: float | None = None
     normalize_by_step: bool = True
     phase_split_ratio: float = 2.0
+    overlap_memory_scans: int = 3
 
 
 @dataclass(frozen=True)
@@ -53,6 +54,8 @@ class LineageEvent:
     split_subtype: SplitSubtype | None = None
     delta_orientation_norm: float = 0.0
     delta_d_norm: float = 0.0
+    preceded_by_merge: bool = False
+    daughter_persistence_scans: int = 1
 
 
 def _spot_coords(node_data: dict[str, Any]) -> tuple[float, float, float]:
@@ -61,6 +64,13 @@ def _spot_coords(node_data: dict[str, Any]) -> tuple[float, float, float]:
         float(node_data["centroid_chi"]),
         float(node_data["centroid_d"]),
     )
+
+
+def _spot_effective_intensity(node_data: dict[str, Any]) -> float:
+    net = float(node_data.get("net_intensity", 0.0))
+    if net > 0.0:
+        return net
+    return max(0.0, float(node_data.get("integrated_intensity", 0.0)))
 
 
 def _classify_split_subtype(
@@ -101,12 +111,14 @@ def _pair_distance_and_sim(
     a: dict[str, Any],
     b: dict[str, Any],
     config: SplitMergeConfig,
+    *,
+    shift_a: tuple[float, float, float] = (0.0, 0.0, 0.0),
 ) -> tuple[float, float | None] | None:
     mu_a, chi_a, d_a = _spot_coords(a)
     mu_b, chi_b, d_b = _spot_coords(b)
-    dmu = abs(mu_a - mu_b)
-    dchi = abs(chi_a - chi_b)
-    dd = abs(d_a - d_b)
+    dmu = abs((mu_a + float(shift_a[0])) - mu_b)
+    dchi = abs((chi_a + float(shift_a[1])) - chi_b)
+    dd = abs((d_a + float(shift_a[2])) - d_b)
     if dmu > config.gate_mu or dchi > config.gate_chi or dd > config.gate_d:
         return None
     if config.normalize_by_step:
@@ -174,13 +186,9 @@ def resolve_splits_and_merges(
     config: SplitMergeConfig | None = None,
     *,
     scan_timestamps: dict[int, str | None] | None = None,
+    predicted_shifts: dict[str, tuple[float, float, float]] | None = None,
 ) -> list[LineageEvent]:
-    """Augment a 1-to-1 trajectory graph with split (1 -> 2+) and merge (2+ -> 1) edges.
-
-    Modifies *G* in place (adding ``edge_type``, ``lineage_role``, and
-    ``parent_track_ids`` attributes, and assigning clean post-split / post-merge
-    track IDs) and returns the ordered list of :class:`LineageEvent` records.
-    """
+    """Augment a 1-to-1 trajectory graph with split (1 -> 2+) and merge (2+ -> 1) edges."""
     cfg = config or SplitMergeConfig()
     if len(G.nodes) == 0 or n_scans < 2:
         G.graph["lineage_events"] = []
@@ -197,6 +205,10 @@ def resolve_splits_and_merges(
             nodes_by_scan[s_idx].append(nid)
         max_tid = max(max_tid, int(G.nodes[nid]["track_id"]))
 
+    shift_map = predicted_shifts or {}
+    zero_shift = (0.0, 0.0, 0.0)
+    merge_origin_scan_by_tid: dict[int, int] = {}
+
     next_tid = max_tid + 1
     events: list[LineageEvent] = []
     next_event_id = 1
@@ -208,13 +220,6 @@ def resolve_splits_and_merges(
             continue
 
         ts = scan_timestamps.get(t + 1) if scan_timestamps else None
-
-        # --- Pass 0: Sever forced long-jump 1-to-1 Hungarian edges ---
-        # Maximum-cardinality Hungarian assignment (when max_cost=inf) will pair an
-        # unrelated leftover merge-source in scan t with an unrelated split-daughter
-        # in scan t+1 across the detector. Sever any continuation edge (u, v) that
-        # either violates SplitMergeConfig gates/max_distance OR where both u and v
-        # have local neighbours at < 50% of dist(u, v).
         from .lifecycle import TrackEvent
 
         existing_edges = [
@@ -225,7 +230,8 @@ def resolve_splits_and_merges(
         ]
         provisional_severed: list[tuple[str, str, dict[str, Any], Any, int, int]] = []
         for u, v in existing_edges:
-            uv_res = _pair_distance_and_sim(G.nodes[u], G.nodes[v], cfg)
+            sh_u = shift_map.get(u, zero_shift)
+            uv_res = _pair_distance_and_sim(G.nodes[u], G.nodes[v], cfg, shift_a=sh_u)
             hard_sever = uv_res is None
             soft_sever = False
             if not hard_sever and uv_res is not None:
@@ -234,7 +240,8 @@ def resolve_splits_and_merges(
                     (
                         r[0]
                         for c in scan_t1_nodes
-                        if c != v and (r := _pair_distance_and_sim(G.nodes[u], G.nodes[c], cfg)) is not None
+                        if c != v
+                        and (r := _pair_distance_and_sim(G.nodes[u], G.nodes[c], cfg, shift_a=sh_u)) is not None
                     ),
                     default=math.inf,
                 )
@@ -242,7 +249,13 @@ def resolve_splits_and_merges(
                     (
                         r[0]
                         for p in scan_t_nodes
-                        if p != u and (r := _pair_distance_and_sim(G.nodes[p], G.nodes[v], cfg)) is not None
+                        if p != u
+                        and (
+                            r := _pair_distance_and_sim(
+                                G.nodes[p], G.nodes[v], cfg, shift_a=shift_map.get(p, zero_shift)
+                            )
+                        )
+                        is not None
                     ),
                     default=math.inf,
                 )
@@ -270,7 +283,9 @@ def resolve_splits_and_merges(
             best_dist = math.inf
             best_sim: float | None = None
             for p_nid in scan_t_nodes:
-                res = _pair_distance_and_sim(G.nodes[p_nid], G.nodes[c_nid], cfg)
+                res = _pair_distance_and_sim(
+                    G.nodes[p_nid], G.nodes[c_nid], cfg, shift_a=shift_map.get(p_nid, zero_shift)
+                )
                 if res is not None and res[0] < best_dist:
                     best_p = p_nid
                     best_dist, best_sim = res
@@ -284,8 +299,8 @@ def resolve_splits_and_merges(
             if len(all_children) < 2:
                 continue
 
-            i_parent = float(G.nodes[p_nid].get("integrated_intensity", 0.0))
-            child_intensities = [max(0.0, float(G.nodes[c].get("integrated_intensity", 0.0))) for c in all_children]
+            i_parent = _spot_effective_intensity(G.nodes[p_nid])
+            child_intensities = [_spot_effective_intensity(G.nodes[c]) for c in all_children]
             i_sum = sum(child_intensities)
             if i_parent <= 0.0 or i_sum <= 0.0:
                 continue
@@ -295,13 +310,17 @@ def resolve_splits_and_merges(
                 continue
             if any((ic / i_sum) < cfg.min_fragment_share for ic in child_intensities):
                 continue
+            if existing_succs:
+                i_exist = sum(_spot_effective_intensity(G.nodes[c]) for c in existing_succs)
+                if i_exist > 0.0 and abs(math.log(i_sum / i_parent)) > abs(math.log(i_exist / i_parent)) + 0.05:
+                    continue
 
-            # Compute mean distance and mean semantic similarity across all children.
             dists: list[float] = []
             sims: list[float] = []
             valid_all = True
+            sh_p = shift_map.get(p_nid, zero_shift)
             for c_nid in all_children:
-                res = _pair_distance_and_sim(G.nodes[p_nid], G.nodes[c_nid], cfg)
+                res = _pair_distance_and_sim(G.nodes[p_nid], G.nodes[c_nid], cfg, shift_a=sh_p)
                 if res is None:
                     valid_all = False
                     break
@@ -318,6 +337,13 @@ def resolve_splits_and_merges(
             )
 
             parent_tid = int(G.nodes[p_nid]["track_id"])
+            merge_scan_origin = merge_origin_scan_by_tid.get(parent_tid)
+            was_preceded_by_merge = bool(
+                merge_scan_origin is not None and (t - merge_scan_origin) <= max(0, int(cfg.overlap_memory_scans))
+            )
+            if was_preceded_by_merge:
+                subtype = "reversible_overlap"
+
             G.nodes[p_nid]["lineage_role"] = "split_parent"
             G.nodes[p_nid]["split_subtype"] = subtype
             child_tids: list[int] = []
@@ -365,6 +391,7 @@ def resolve_splits_and_merges(
                     split_subtype=subtype,
                     delta_orientation_norm=round(d_orient_n, 4),
                     delta_d_norm=round(d_d_n, 4),
+                    preceded_by_merge=was_preceded_by_merge,
                 )
             )
             next_event_id += 1
@@ -377,10 +404,11 @@ def resolve_splits_and_merges(
             best_c: str | None = None
             best_dist = math.inf
             best_sim: float | None = None
+            sh_p = shift_map.get(p_nid, zero_shift)
             for c_nid in scan_t1_nodes:
                 if G.nodes[c_nid].get("lineage_role") == "split_child":
                     continue
-                res = _pair_distance_and_sim(G.nodes[p_nid], G.nodes[c_nid], cfg)
+                res = _pair_distance_and_sim(G.nodes[p_nid], G.nodes[c_nid], cfg, shift_a=sh_p)
                 if res is not None and res[0] < best_dist:
                     best_c = c_nid
                     best_dist, best_sim = res
@@ -393,8 +421,8 @@ def resolve_splits_and_merges(
             if len(all_parents) < 2:
                 continue
 
-            i_target = float(G.nodes[c_nid].get("integrated_intensity", 0.0))
-            parent_intensities = [max(0.0, float(G.nodes[p].get("integrated_intensity", 0.0))) for p in all_parents]
+            i_target = _spot_effective_intensity(G.nodes[c_nid])
+            parent_intensities = [_spot_effective_intensity(G.nodes[p]) for p in all_parents]
             i_parents_sum = sum(parent_intensities)
             if i_target <= 0.0 or i_parents_sum <= 0.0:
                 continue
@@ -404,12 +432,21 @@ def resolve_splits_and_merges(
                 continue
             if any((ip / i_parents_sum) < cfg.min_fragment_share for ip in parent_intensities):
                 continue
+            if existing_preds:
+                i_exist_p = sum(_spot_effective_intensity(G.nodes[p]) for p in existing_preds)
+                if (
+                    i_exist_p > 0.0
+                    and abs(math.log(i_target / i_parents_sum)) > abs(math.log(i_target / i_exist_p)) + 0.05
+                ):
+                    continue
 
             dists = []
             sims = []
             valid_all = True
             for p_nid in all_parents:
-                res = _pair_distance_and_sim(G.nodes[p_nid], G.nodes[c_nid], cfg)
+                res = _pair_distance_and_sim(
+                    G.nodes[p_nid], G.nodes[c_nid], cfg, shift_a=shift_map.get(p_nid, zero_shift)
+                )
                 if res is None:
                     valid_all = False
                     break
@@ -434,6 +471,7 @@ def resolve_splits_and_merges(
             _propagate_track_id(G, c_nid, old_c_tid, merged_tid)
             G.nodes[c_nid]["lineage_role"] = "merge_target"
             G.nodes[c_nid]["parent_track_ids"] = sorted(parent_tids)
+            merge_origin_scan_by_tid[merged_tid] = t + 1
 
             mean_dist = float(np.mean(dists))
             mean_sim = float(np.mean(sims)) if sims else None
@@ -469,8 +507,22 @@ def resolve_splits_and_merges(
                 if G.nodes[v].get("track_id") == fresh_tid:
                     _propagate_track_id(G, v, fresh_tid, u_tid)
 
-    G.graph["lineage_events"] = events
-    return events
+    obs_count_by_tid: dict[int, int] = {}
+    for _, nd in G.nodes(data=True):
+        tid_val = int(nd["track_id"])
+        obs_count_by_tid[tid_val] = obs_count_by_tid.get(tid_val, 0) + 1
+
+    final_events: list[LineageEvent] = []
+    for ev in events:
+        if ev.event_type == "split" and len(ev.child_track_ids) >= 2:
+            lengths = sorted((obs_count_by_tid.get(int(ctid), 1) for ctid in ev.child_track_ids), reverse=True)
+            coexist = int(lengths[1])
+            final_events.append(replace(ev, daughter_persistence_scans=coexist))
+        else:
+            final_events.append(ev)
+
+    G.graph["lineage_events"] = final_events
+    return final_events
 
 
 def events_to_table(events: list[LineageEvent]) -> list[dict[str, Any]]:
@@ -496,6 +548,8 @@ def events_to_table(events: list[LineageEvent]) -> list[dict[str, Any]]:
                 "mean_distance": ev.mean_distance,
                 "delta_orientation_norm": ev.delta_orientation_norm,
                 "delta_d_norm": ev.delta_d_norm,
+                "preceded_by_merge": bool(ev.preceded_by_merge),
+                "daughter_persistence_scans": int(ev.daughter_persistence_scans),
                 "semantic_similarity": ev.semantic_similarity if ev.semantic_similarity is not None else "",
                 "confidence": ev.confidence,
             }

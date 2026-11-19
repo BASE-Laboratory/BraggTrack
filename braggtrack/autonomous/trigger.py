@@ -9,12 +9,13 @@ high-priority candidate grains for zoomed Dark-Field X-ray Microscopy (DFXM) acq
 from __future__ import annotations
 
 import math
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal
 
 import numpy as np
 
-from .gp import AcquisitionKind, forecast_grain_trajectory_gp, score_candidates_gp
+from .gp import AcquisitionKind, ForecastDomain, forecast_grain_trajectory_gp, score_candidates_gp
 
 if TYPE_CHECKING:
     from braggtrack.io.crystallography import DetectorGeometry
@@ -84,6 +85,7 @@ class ZoomTriggerPolicy:
     ucb_beta: float = 1.96
     ei_xi: float = 0.01
     use_gp_extrapolation: bool = True
+    forecast_domain: ForecastDomain = "time"
     execution_mode: ExecutionMode = "replay"
     mu_bounds: tuple[float, float] | None = None
     chi_bounds: tuple[float, float] | None = None
@@ -237,6 +239,8 @@ def compute_target_geometry(
     max_extrapolation_steps: float | None = None,
     scan_elapsed_s: dict[int, float] | None = None,
     use_gp: bool = True,
+    forecast_domain: ForecastDomain = "time",
+    stimuli_by_scan: Mapping[int, ScanStimulusPoint] | Sequence[ScanStimulusPoint] | None = None,
 ) -> tuple[
     tuple[float, float, float],
     tuple[float, float, float],
@@ -296,6 +300,10 @@ def compute_target_geometry(
                 e_d,
                 target_t,
                 step_floors=(step_mu, step_chi, step_d),
+                domain=forecast_domain,
+                stimuli=stimuli_by_scan,
+                scan_indices=s_indices,
+                lead_scans=lead_scans,
             )
             dm = gp_out.mean[0] - cur_mu
             dc = gp_out.mean[1] - cur_chi
@@ -378,6 +386,7 @@ def select_zoom_targets(
     calibration: AxisCalibration | None = None,
     detector: DetectorGeometry | None = None,
     stimulus: ScanStimulusPoint | None = None,
+    stimuli_by_scan: Mapping[int, ScanStimulusPoint] | Sequence[ScanStimulusPoint] | None = None,
     scan_elapsed_s: dict[int, float] | None = None,
     last_triggered_scan_by_lineage: dict[int, int] | None = None,
     zoom_counts_by_lineage: dict[int, int] | None = None,
@@ -549,6 +558,8 @@ def select_zoom_targets(
             max_extrapolation_steps=pol.max_extrapolation_steps,
             scan_elapsed_s=scan_elapsed_s,
             use_gp=pol.use_gp_extrapolation,
+            forecast_domain=pol.forecast_domain,
+            stimuli_by_scan=stimuli_by_scan,
         )
         pred_c, half_w, was_clamped = clamp_setpoint_bounds(
             pred_c,

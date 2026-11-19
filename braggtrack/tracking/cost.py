@@ -74,6 +74,52 @@ def _spot_widths(spot: dict, *, normalize_by_step: bool) -> tuple[float, float, 
     )
 
 
+def _spot_intensity(spot: dict) -> float:
+    """Return pedestal-subtracted ``net_intensity`` when positive, falling back to ``integrated_intensity``."""
+    net = float(spot.get("net_intensity", 0.0))
+    if net > 0.0:
+        return max(net, 1.0)
+    return max(float(spot.get("integrated_intensity", 1.0)), 1.0)
+
+
+def _spot_step_cov(spot: dict, *, normalize_by_step: bool = True) -> np.ndarray:
+    """Reconstruct symmetric positive-definite 3x3 covariance in ``(mu, chi, d)`` coordinates.
+
+    Uses full second moments ``(cov_zz, cov_xx, cov_yy, cov_zx, cov_zy, cov_yx)`` when
+    available (preserving 3D streak tilt/orientation), or falls back to diagonal
+    eigenvalues ``diag(eig_1, eig_2, eig_3)`` for minimal synthetic dicts. Adds the
+    uniform voxel quantization floor ``(1/12) I_3`` in step coordinates.
+    """
+    sm, sc, sd = _spot_scales(spot) if normalize_by_step else (1.0, 1.0, 1.0)
+    if all(k in spot for k in ("cov_zz", "cov_xx", "cov_yy")):
+        czz = float(spot.get("cov_zz", 0.0)) / (sm * sm)
+        cxx = float(spot.get("cov_xx", 0.0)) / (sc * sc)
+        cyy = float(spot.get("cov_yy", 0.0)) / (sd * sd)
+        czx = float(spot.get("cov_zx", 0.0)) / (sm * sc)
+        czy = float(spot.get("cov_zy", 0.0)) / (sm * sd)
+        cyx = float(spot.get("cov_yx", 0.0)) / (sd * sc)
+        cov = np.array(
+            [
+                [czz, czx, czy],
+                [czx, cxx, cyx],
+                [czy, cyx, cyy],
+            ],
+            dtype=np.float64,
+        )
+    else:
+        e1, e2, e3 = _spot_eigs(spot, normalize_by_step=normalize_by_step)
+        cov = np.diag([max(0.0, e1), max(0.0, e2), max(0.0, e3)]).astype(np.float64)
+
+    q_floor = (
+        np.diag([1.0 / 12.0, 1.0 / 12.0, 1.0 / 12.0])
+        if normalize_by_step
+        else np.diag([(sm * sm) / 12.0, (sc * sc) / 12.0, (sd * sd) / 12.0])
+    )
+    vals, vecs = np.linalg.eigh(cov + q_floor)
+    vals_clamped = np.maximum(vals, 1e-6)
+    return (vecs * vals_clamped) @ vecs.T
+
+
 class PositionShapeCost:
     """Weighted position + shape cost with per-axis gating and step-scale invariance.
 
@@ -173,12 +219,8 @@ class PositionShapeCost:
 
         cost = self.position_weight * pos_d2 + self.shape_weight * shape_d2
         if self.intensity_weight > 0.0:
-            log_ia = np.log(np.maximum([float(s.get("integrated_intensity", 1.0)) for s in spots_t], 1.0))[
-                :, np.newaxis
-            ]
-            log_ib = np.log(np.maximum([float(s.get("integrated_intensity", 1.0)) for s in spots_t1], 1.0))[
-                np.newaxis, :
-            ]
+            log_ia = np.log([_spot_intensity(s) for s in spots_t])[:, np.newaxis]
+            log_ib = np.log([_spot_intensity(s) for s in spots_t1])[np.newaxis, :]
             cost = cost + self.intensity_weight * (log_ia - log_ib) ** 2
         cost[bad] = np.inf
         return cost
@@ -211,14 +253,119 @@ class PositionShapeCost:
 
         total = self.position_weight * pos_dist2 + self.shape_weight * shape_dist2
         if self.intensity_weight > 0.0:
-            ia = max(float(spot_i.get("integrated_intensity", 1.0)), 1.0)
-            ib = max(float(spot_j.get("integrated_intensity", 1.0)), 1.0)
+            ia = _spot_intensity(spot_i)
+            ib = _spot_intensity(spot_j)
             total += self.intensity_weight * (math.log(ia) - math.log(ib)) ** 2
         return total
 
 
+class WassersteinBuresCost:
+    """Closed-form 3D Gaussian Optimal Transport (2-Wasserstein / Bures) association cost.
+
+    Models each reflection as an oriented 3D Gaussian intensity distribution
+    ``N(m_i, Sigma_i)`` in dimensionless step coordinates ``(mu, chi, d)`` and evaluates
+    the exact squared 2-Wasserstein distance plus scale-free log-intensity conservation:
+
+    .. math::
+
+        W_2^2(i, j) = \\|m_i - m_j\\|_2^2
+            + b_w \\, \\mathrm{Tr}\\!\\left(\\Sigma_i + \\Sigma_j
+            - 2(\\Sigma_i^{1/2} \\Sigma_j \\Sigma_i^{1/2})^{1/2}\\right)
+            + w_I \\left(\\ln \\frac{I_i^{\\mathrm{net}}}{I_j^{\\mathrm{net}}}\\right)^2
+
+    Unlike eigenvalue-only :class:`PositionShapeCost` (which is blind to ``+45°`` vs ``-45°``
+    streak tilt when semi-axis lengths match), the Bures covariance term preserves full 3D
+    eigenvector orientation in native ``step^2`` units without neural network inference.
+    """
+
+    def __init__(
+        self,
+        position_weight: float = 1.0,
+        bures_weight: float = 1.0,
+        gate_mu: float = math.inf,
+        gate_chi: float = math.inf,
+        gate_d: float = math.inf,
+        *,
+        max_step_mu: float = math.inf,
+        max_step_chi: float = math.inf,
+        max_step_d: float = math.inf,
+        intensity_weight: float = 15.0,
+        normalize_by_step: bool = True,
+    ) -> None:
+        self.position_weight = float(position_weight)
+        self.bures_weight = float(bures_weight)
+        self.gate_mu = float(gate_mu)
+        self.gate_chi = float(gate_chi)
+        self.gate_d = float(gate_d)
+        self.max_step_mu = float(max_step_mu)
+        self.max_step_chi = float(max_step_chi)
+        self.max_step_d = float(max_step_d)
+        self.intensity_weight = float(intensity_weight)
+        self.normalize_by_step = bool(normalize_by_step)
+
+    @staticmethod
+    def _matrix_sqrt_psd(covs: np.ndarray) -> np.ndarray:
+        vals, vecs = np.linalg.eigh(covs)
+        sqrt_vals = np.sqrt(np.maximum(vals, 0.0))
+        return np.einsum("...ik,...k,...jk->...ij", vecs, sqrt_vals, vecs)
+
+    def pairwise_cost_matrix(self, spots_t: list[dict], spots_t1: list[dict]) -> np.ndarray:
+        n, m = len(spots_t), len(spots_t1)
+        if n == 0 or m == 0:
+            return np.zeros((n, m), dtype=np.float64)
+
+        x = np.array([[s["centroid_mu"], s["centroid_chi"], s["centroid_d"]] for s in spots_t], dtype=np.float64)
+        y = np.array([[s["centroid_mu"], s["centroid_chi"], s["centroid_d"]] for s in spots_t1], dtype=np.float64)
+
+        dmu = np.abs(x[:, 0][:, np.newaxis] - y[:, 0][np.newaxis, :])
+        dchi = np.abs(x[:, 1][:, np.newaxis] - y[:, 1][np.newaxis, :])
+        dd = np.abs(x[:, 2][:, np.newaxis] - y[:, 2][np.newaxis, :])
+        bad = (dmu > self.gate_mu) | (dchi > self.gate_chi) | (dd > self.gate_d)
+
+        sx = np.array([_spot_scales(s) for s in spots_t], dtype=np.float64)
+        sy = np.array([_spot_scales(s) for s in spots_t1], dtype=np.float64)
+        smu = 0.5 * (sx[:, 0][:, np.newaxis] + sy[:, 0][np.newaxis, :])
+        schi = 0.5 * (sx[:, 1][:, np.newaxis] + sy[:, 1][np.newaxis, :])
+        sd = 0.5 * (sx[:, 2][:, np.newaxis] + sy[:, 2][np.newaxis, :])
+        step_dmu = dmu / smu
+        step_dchi = dchi / schi
+        step_dd = dd / sd
+        bad |= (step_dmu > self.max_step_mu) | (step_dchi > self.max_step_chi) | (step_dd > self.max_step_d)
+
+        pos_d2 = (
+            step_dmu**2 + step_dchi**2 + step_dd**2 if self.normalize_by_step else cdist(x, y, metric="sqeuclidean")
+        )
+
+        if self.bures_weight > 0.0:
+            cov_t = np.stack([_spot_step_cov(s, normalize_by_step=self.normalize_by_step) for s in spots_t], axis=0)
+            cov_t1 = np.stack([_spot_step_cov(s, normalize_by_step=self.normalize_by_step) for s in spots_t1], axis=0)
+            sqrt_t = self._matrix_sqrt_psd(cov_t)
+            # Symmetric PSD sandwich S_i @ Sigma_j @ S_i of shape (N, M, 3, 3)
+            prod = np.einsum("nik,mkl,nlj->nmij", sqrt_t, cov_t1, sqrt_t)
+            prod = 0.5 * (prod + np.swapaxes(prod, -1, -2))
+            eigs_prod = np.linalg.eigvalsh(prod)
+            tr_cross = np.sum(np.sqrt(np.maximum(eigs_prod, 0.0)), axis=-1)
+            tr_t = np.trace(cov_t, axis1=-2, axis2=-1)[:, np.newaxis]
+            tr_t1 = np.trace(cov_t1, axis1=-2, axis2=-1)[np.newaxis, :]
+            bures_d2 = np.maximum(0.0, tr_t + tr_t1 - 2.0 * tr_cross)
+        else:
+            bures_d2 = 0.0
+
+        cost = self.position_weight * pos_d2 + self.bures_weight * bures_d2
+        if self.intensity_weight > 0.0:
+            log_ia = np.log([_spot_intensity(s) for s in spots_t])[:, np.newaxis]
+            log_ib = np.log([_spot_intensity(s) for s in spots_t1])[np.newaxis, :]
+            cost = cost + self.intensity_weight * (log_ia - log_ib) ** 2
+        cost[bad] = np.inf
+        return cost
+
+    def __call__(self, spot_i: dict, spot_j: dict) -> float:
+        mat = self.pairwise_cost_matrix([spot_i], [spot_j])
+        return float(mat[0, 0])
+
+
 class GeometrySemanticCost:
-    """α × geometry + β × (1 − cos(f_i, f_j)) with geometry from :class:`PositionShapeCost`.
+    """α × geometry + β × (1 − cos(f_i, f_j)) with pluggable geometric cost.
 
     Embeddings must be L2-normalised; ``sim`` is the dot product.  When
     ``cost_beta`` is zero, the semantic branch is skipped and missing
@@ -228,7 +375,7 @@ class GeometrySemanticCost:
 
     def __init__(
         self,
-        geometry: PositionShapeCost,
+        geometry: CostFunction,
         *,
         cost_alpha: float = 1.0,
         cost_beta: float = 0.0,

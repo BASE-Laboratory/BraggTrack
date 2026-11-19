@@ -20,8 +20,9 @@ from __future__ import annotations
 
 import math
 import warnings
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 import numpy as np
 from scipy.stats import norm
@@ -29,7 +30,13 @@ from sklearn.exceptions import ConvergenceWarning
 from sklearn.gaussian_process import GaussianProcessRegressor
 from sklearn.gaussian_process.kernels import ConstantKernel, Matern
 
+from braggtrack.tracking.drift import TrackKalmanState
+
+if TYPE_CHECKING:
+    from braggtrack.io.operando_log import ScanStimulusPoint
+
 AcquisitionKind = Literal["ucb", "ei", "max_variance"]
+ForecastDomain = Literal["time", "electro_state"]
 
 
 @dataclass(frozen=True)
@@ -38,6 +45,106 @@ class GPForecast:
 
     mean: tuple[float, float, float]
     std: tuple[float, float, float]
+
+
+def compute_electrochemical_state_coord(
+    stimuli: Sequence[ScanStimulusPoint] | Mapping[int, ScanStimulusPoint],
+    scan_indices: Sequence[int],
+    *,
+    lead_scans: float = 1.0,
+    voltage_weight: float = 0.35,
+) -> tuple[np.ndarray, float] | None:
+    """Build a strictly causal cumulative electrochemical state coordinate ``s_0 .. s_t`` and ``s_{t+lead}``.
+
+    Uses only stimulus measurements at ``scan_indices`` (no future lookahead). During open-circuit
+    voltage (OCV) rests (``|I_t| < 5%`` of active median ``|I|`` or ``ds_last ~ 0``), ``s_{t+lead}``
+    halts extrapolation (``ds_lead = 0``) instead of overshooting linearly in wall-clock time.
+    Returns ``None`` when neither ``capacity_mah_g`` nor ``voltage_v`` is available on the history.
+    """
+    if len(scan_indices) == 0:
+        return np.zeros(0, dtype=np.float64), 0.0
+
+    stim_map: dict[int, ScanStimulusPoint] = (
+        {int(k): v for k, v in stimuli.items()}
+        if isinstance(stimuli, Mapping)
+        else {int(st.scan_idx): st for st in stimuli}
+    )
+    pts: list[ScanStimulusPoint] = []
+    for si in scan_indices:
+        st = stim_map.get(int(si))
+        if st is None:
+            return None
+        pts.append(st)
+
+    has_q = all(p.capacity_mah_g is not None and math.isfinite(float(p.capacity_mah_g)) for p in pts)
+    has_i_t = all(
+        p.current_ma is not None and math.isfinite(float(p.current_ma)) and math.isfinite(float(p.elapsed_s))
+        for p in pts
+    )
+    has_v = all(p.voltage_v is not None and math.isfinite(float(p.voltage_v)) for p in pts)
+    if not (has_q or has_i_t or has_v):
+        return None
+
+    n = len(pts)
+    if n == 1:
+        return np.array([0.0], dtype=np.float64), 0.0
+
+    dq = np.zeros(n - 1, dtype=np.float64)
+    dv = np.zeros(n - 1, dtype=np.float64)
+    for k in range(n - 1):
+        if has_q:
+            dq[k] = abs(float(pts[k + 1].capacity_mah_g) - float(pts[k].capacity_mah_g))  # type: ignore[arg-type]
+        elif has_i_t:
+            dt_h = max(0.0, float(pts[k + 1].elapsed_s) - float(pts[k].elapsed_s)) / 3600.0
+            i_mid = 0.5 * (abs(float(pts[k + 1].current_ma)) + abs(float(pts[k].current_ma)))  # type: ignore[arg-type]
+            dq[k] = i_mid * dt_h
+        if has_v:
+            dv[k] = abs(float(pts[k + 1].voltage_v) - float(pts[k].voltage_v))  # type: ignore[arg-type]
+
+    pos_dq = dq[dq > 1e-9]
+    pos_dv = dv[dv > 1e-9]
+    q_scale = float(np.median(pos_dq)) if len(pos_dq) > 0 else 1.0
+    v_scale = float(np.median(pos_dv)) if len(pos_dv) > 0 else 1.0
+
+    if len(pos_dq) > 0 and len(pos_dv) > 0:
+        raw_ds = (dq / q_scale) + float(voltage_weight) * (dv / v_scale)
+    elif len(pos_dq) > 0:
+        raw_ds = dq / q_scale
+    elif len(pos_dv) > 0:
+        raw_ds = dv / v_scale
+    else:
+        s_coords = np.arange(n, dtype=np.float64) * 1e-4
+        return s_coords, float(s_coords[-1])
+
+    ds = np.maximum(raw_ds, 1e-4)
+    s_coords = np.concatenate([[0.0], np.cumsum(ds)])
+
+    st_now = pts[-1]
+    ds_last = float(raw_ds[-1])
+    active_ds = raw_ds[raw_ds > 0.05 * max(float(np.median(raw_ds)), 1e-9)]
+    med_active_ds = float(np.median(active_ds)) if len(active_ds) > 0 else ds_last
+
+    if has_i_t:
+        currents = np.asarray([abs(float(p.current_ma)) for p in pts], dtype=np.float64)  # type: ignore[arg-type]
+        active_i = currents[currents > 1e-9]
+        med_i = float(np.median(active_i)) if len(active_i) > 0 else 0.0
+        i_now = abs(float(st_now.current_ma))  # type: ignore[arg-type]
+        if med_i <= 1e-9 or i_now <= 0.05 * med_i:
+            ds_lead_per_scan = 0.0
+        else:
+            i_prev = abs(float(pts[-2].current_ma))  # type: ignore[arg-type]
+            if i_prev > 0.05 * med_i and ds_last > 1e-6:
+                ds_lead_per_scan = ds_last * (i_now / i_prev)
+            else:
+                ds_lead_per_scan = med_active_ds * (i_now / med_i)
+    else:
+        if ds_last <= 0.05 * max(med_active_ds, 1e-9):
+            ds_lead_per_scan = 0.0
+        else:
+            ds_lead_per_scan = ds_last
+
+    target_s = float(s_coords[-1]) + max(0.0, float(lead_scans)) * ds_lead_per_scan
+    return s_coords, target_s
 
 
 def forecast_1d_gp(
@@ -66,7 +173,6 @@ def forecast_1d_gp(
     if n == 1:
         return float(y_arr[0]), float(max(s_arr[0], min_std_floor))
 
-    # Normalize time axis relative to latest observation using median step size
     diffs = np.diff(t_arr)
     pos_diffs = diffs[diffs > 1e-12]
     dt_scale = float(np.median(pos_diffs)) if len(pos_diffs) > 0 else 1.0
@@ -74,13 +180,10 @@ def forecast_1d_gp(
     tau = (t_arr - t_last) / dt_scale
     tau_star = (float(target_time) - t_last) / dt_scale
 
-    # Weighted linear basis H = [1, tau]. When n == 2 (dof == 0), there are zero residual
-    # degrees of freedom to separate physical drift from watershed boundary jitter, and
-    # unregularized 2-point extrapolation amplifies observation variance by 5x. A zero-mean
-    # Gaussian velocity prior matching the marginal slope precision shrinks noisy 2-point
-    # slopes by 0.5x around the precision-weighted mean (cutting 1-step noise variance from
-    # 5*sigma^2 to 1.625*sigma^2) until n >= 3 scans exist.
     weights = 1.0 / np.maximum(s_arr * s_arr, 1e-18)
+    if abs(tau_star) <= 1e-9:
+        return float(y_arr[-1]), float(max(s_arr[-1], min_std_floor))
+
     H = np.column_stack([np.ones_like(tau), tau])
     HWH = (H.T * weights) @ H
     if n == 2:
@@ -97,7 +200,6 @@ def forecast_1d_gp(
     trend_pred = float(h_star @ beta)
     residuals = y_arr - (H @ beta)
 
-    # Parametric WLS trend variance; fit Matérn-3/2 residual GP only when residuals exceed noise
     dof = max(1, n - 2)
     chi2_red = float(np.sum(weights * residuals * residuals)) / dof if n >= 3 else 1.0
     param_var = float(h_star @ cov_beta @ h_star)
@@ -129,7 +231,29 @@ def forecast_1d_gp(
     return trend_pred + res_pred, total_std
 
 
-def forecast_grain_trajectory_gp(
+def forecast_persistence(
+    mu_vals: np.ndarray,
+    chi_vals: np.ndarray,
+    d_vals: np.ndarray,
+    mu_errs: np.ndarray,
+    chi_errs: np.ndarray,
+    d_errs: np.ndarray,
+    *,
+    step_floors: tuple[float, float, float] = (1e-6, 1e-6, 1e-6),
+) -> GPForecast:
+    """Zero-velocity persistence baseline: predicts the latest observed centroid ``y_t``."""
+    m = np.asarray(mu_vals, dtype=np.float64).ravel()
+    c = np.asarray(chi_vals, dtype=np.float64).ravel()
+    d = np.asarray(d_vals, dtype=np.float64).ravel()
+    if len(m) == 0:
+        return GPForecast(mean=(0.0, 0.0, 0.0), std=step_floors)
+    em = max(float(np.asarray(mu_errs, dtype=np.float64).ravel()[-1]), 0.35 * max(step_floors[0], 1e-12))
+    ec = max(float(np.asarray(chi_errs, dtype=np.float64).ravel()[-1]), 0.35 * max(step_floors[1], 1e-12))
+    ed = max(float(np.asarray(d_errs, dtype=np.float64).ravel()[-1]), 0.35 * max(step_floors[2], 1e-12))
+    return GPForecast(mean=(float(m[-1]), float(c[-1]), float(d[-1])), std=(em, ec, ed))
+
+
+def forecast_constant_velocity_2pt(
     times: np.ndarray,
     mu_vals: np.ndarray,
     chi_vals: np.ndarray,
@@ -141,10 +265,152 @@ def forecast_grain_trajectory_gp(
     *,
     step_floors: tuple[float, float, float] = (1e-6, 1e-6, 1e-6),
 ) -> GPForecast:
+    """Unregularized 2-point finite-difference constant-velocity baseline from ``(t_{n-2}, t_{n-1})``."""
+    t = np.asarray(times, dtype=np.float64).ravel()
+    if len(t) < 2 or float(t[-1] - t[-2]) <= 1e-12:
+        return forecast_persistence(mu_vals, chi_vals, d_vals, mu_errs, chi_errs, d_errs, step_floors=step_floors)
+    dt_prev = float(t[-1] - t[-2])
+    dt_fwd = float(target_time) - float(t[-1])
+    ratio = dt_fwd / dt_prev
+
+    def _extrap(vals: np.ndarray, errs: np.ndarray, flr: float) -> tuple[float, float]:
+        v = np.asarray(vals, dtype=np.float64).ravel()
+        e = np.maximum(np.asarray(errs, dtype=np.float64).ravel(), 0.35 * max(flr, 1e-12))
+        pred = float(v[-1]) + ratio * float(v[-1] - v[-2])
+        var = ((1.0 + ratio) ** 2) * float(e[-1] ** 2) + (ratio**2) * float(e[-2] ** 2)
+        return pred, math.sqrt(max(var, (0.35 * max(flr, 1e-12)) ** 2))
+
+    pm, sm = _extrap(mu_vals, mu_errs, step_floors[0])
+    pc, sc = _extrap(chi_vals, chi_errs, step_floors[1])
+    pd, sd = _extrap(d_vals, d_errs, step_floors[2])
+    return GPForecast(mean=(pm, pc, pd), std=(sm, sc, sd))
+
+
+def forecast_kalman_cv(
+    times: np.ndarray,
+    mu_vals: np.ndarray,
+    chi_vals: np.ndarray,
+    d_vals: np.ndarray,
+    mu_errs: np.ndarray,
+    chi_errs: np.ndarray,
+    d_errs: np.ndarray,
+    target_time: float,
+    *,
+    step_floors: tuple[float, float, float] = (1e-6, 1e-6, 1e-6),
+    accel_sigma: float = 2.5,
+) -> GPForecast:
+    """Causal constant-velocity Kalman filter baseline (:class:`TrackKalmanState`)."""
+    t = np.asarray(times, dtype=np.float64).ravel()
+    m = np.asarray(mu_vals, dtype=np.float64).ravel()
+    c = np.asarray(chi_vals, dtype=np.float64).ravel()
+    d = np.asarray(d_vals, dtype=np.float64).ravel()
+    if len(t) == 0:
+        return GPForecast(mean=(0.0, 0.0, 0.0), std=step_floors)
+    em = np.maximum(np.asarray(mu_errs, dtype=np.float64).ravel(), 0.35 * max(step_floors[0], 1e-12))
+    ec = np.maximum(np.asarray(chi_errs, dtype=np.float64).ravel(), 0.35 * max(step_floors[1], 1e-12))
+    ed = np.maximum(np.asarray(d_errs, dtype=np.float64).ravel(), 0.35 * max(step_floors[2], 1e-12))
+    if len(t) == 1:
+        return GPForecast(mean=(float(m[0]), float(c[0]), float(d[0])), std=(float(em[0]), float(ec[0]), float(ed[0])))
+
+    diffs = np.diff(t)
+    dt_scale = float(np.median(diffs[diffs > 1e-12])) if np.any(diffs > 1e-12) else 1.0
+    tau = t / dt_scale
+    tau_target = float(target_time) / dt_scale
+
+    scales = (
+        max(float(step_floors[0]), 1e-12),
+        max(float(step_floors[1]), 1e-12),
+        max(float(step_floors[2]), 1e-12),
+    )
+    accel_steps = (0.6, float(accel_sigma), float(accel_sigma))
+    kf = TrackKalmanState.initialize(
+        {
+            "centroid_mu": float(m[0]),
+            "centroid_chi": float(c[0]),
+            "centroid_d": float(d[0]),
+            "centroid_mu_err": float(em[0]),
+            "centroid_chi_err": float(ec[0]),
+            "centroid_d_err": float(ed[0]),
+            "step_mu": scales[0],
+            "step_chi": scales[1],
+            "step_d": scales[2],
+        },
+        time_val=float(tau[0]),
+        init_vel_std_steps=max(5.0, 2.0 * float(accel_sigma)),
+    )
+    for k in range(1, len(tau)):
+        kf.update(
+            {
+                "centroid_mu": float(m[k]),
+                "centroid_chi": float(c[k]),
+                "centroid_d": float(d[k]),
+                "centroid_mu_err": float(em[k]),
+                "centroid_chi_err": float(ec[k]),
+                "centroid_d_err": float(ed[k]),
+                "step_mu": scales[0],
+                "step_chi": scales[1],
+                "step_d": scales[2],
+            },
+            time_val=float(tau[k]),
+            accel_std_steps=accel_steps,
+        )
+
+    dt_fwd = max(0.0, tau_target - float(tau[-1]))
+    if dt_fwd <= 1e-9:
+        pred_mean = (float(kf.pos[0]), float(kf.pos[1]), float(kf.pos[2]))
+        raw_std = (
+            math.sqrt(max(float(kf.cov[0, 0, 0]), 1e-12)),
+            math.sqrt(max(float(kf.cov[1, 0, 0]), 1e-12)),
+            math.sqrt(max(float(kf.cov[2, 0, 0]), 1e-12)),
+        )
+    else:
+        pred_mean, raw_std = kf.predict(dt=dt_fwd, accel_std_steps=accel_steps, scales=scales)
+    sm = max(raw_std[0], 0.35 * scales[0])
+    sc = max(raw_std[1], 0.35 * scales[1])
+    sd = max(raw_std[2], 0.35 * scales[2])
+    return GPForecast(mean=pred_mean, std=(sm, sc, sd))
+
+
+def forecast_grain_trajectory_gp(
+    times: np.ndarray,
+    mu_vals: np.ndarray,
+    chi_vals: np.ndarray,
+    d_vals: np.ndarray,
+    mu_errs: np.ndarray,
+    chi_errs: np.ndarray,
+    d_errs: np.ndarray,
+    target_time: float,
+    *,
+    step_floors: tuple[float, float, float] = (1e-6, 1e-6, 1e-6),
+    domain: ForecastDomain = "time",
+    stimuli: Sequence[ScanStimulusPoint] | Mapping[int, ScanStimulusPoint] | None = None,
+    scan_indices: Sequence[int] | None = None,
+    lead_scans: float | None = None,
+) -> GPForecast:
     """Forecast 3D ``(mu, chi, d)`` grain setpoint and 1-sigma uncertainty via heteroscedastic GP."""
-    pm, sm = forecast_1d_gp(times, mu_vals, mu_errs, target_time, min_std_floor=0.35 * max(step_floors[0], 1e-12))
-    pc, sc = forecast_1d_gp(times, chi_vals, chi_errs, target_time, min_std_floor=0.35 * max(step_floors[1], 1e-12))
-    pd, sd = forecast_1d_gp(times, d_vals, d_errs, target_time, min_std_floor=0.35 * max(step_floors[2], 1e-12))
+    coord_arr = np.asarray(times, dtype=np.float64).ravel()
+    coord_target = float(target_time)
+
+    if domain == "electro_state" and stimuli is not None and len(coord_arr) >= 2:
+        if scan_indices is not None:
+            s_idx_seq: Sequence[int] = scan_indices
+        else:
+            s_idx_seq = [int(round(float(x))) for x in coord_arr]
+        if lead_scans is not None:
+            eff_lead = float(lead_scans)
+        else:
+            diffs = np.diff(coord_arr)
+            dt_med = float(np.median(diffs[diffs > 1e-12])) if np.any(diffs > 1e-12) else 1.0
+            eff_lead = max(0.0, (float(target_time) - float(coord_arr[-1])) / dt_med)
+        state_res = compute_electrochemical_state_coord(stimuli, s_idx_seq, lead_scans=eff_lead)
+        if state_res is not None:
+            coord_arr, coord_target = state_res
+
+    pm, sm = forecast_1d_gp(coord_arr, mu_vals, mu_errs, coord_target, min_std_floor=0.35 * max(step_floors[0], 1e-12))
+    pc, sc = forecast_1d_gp(
+        coord_arr, chi_vals, chi_errs, coord_target, min_std_floor=0.35 * max(step_floors[1], 1e-12)
+    )
+    pd, sd = forecast_1d_gp(coord_arr, d_vals, d_errs, coord_target, min_std_floor=0.35 * max(step_floors[2], 1e-12))
     return GPForecast(mean=(pm, pc, pd), std=(sm, sc, sd))
 
 
