@@ -3,7 +3,13 @@
 from .beamline import BeamlineAdapter
 from .crystallography import DetectorGeometry, annotate_crystallographic_columns
 from .discovery import discover_operando_scans
-from .export import IMAGED11_COLUMNS, export_imaged11_flt, export_nexus_process, read_imaged11_flt
+from .export import (
+    IMAGED11_COLUMNS,
+    export_imaged11_flt,
+    export_nexus_process,
+    export_ome_zarr_volume,
+    read_imaged11_flt,
+)
 from .lazy import LazyVolume, detector_foreground_threshold_chunked, open_lazy_volume, otsu_threshold_chunked
 from .models import AxisCalibration, AxisSpec, ExperimentSequence, ScanVolumeMeta
 from .nexus import (
@@ -45,6 +51,7 @@ __all__ = [
     "discover_primary_volume_path",
     "export_imaged11_flt",
     "export_nexus_process",
+    "export_ome_zarr_volume",
     "extract_axis_calibration",
     "extract_scan_metadata",
     "load_operando_log",

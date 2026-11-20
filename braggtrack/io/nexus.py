@@ -171,18 +171,25 @@ _MOTOR_AXIS_SYNONYMS: dict[str, tuple[str, ...]] = {
 
 
 def extract_axis_calibration(path: str | Path, *, swmr: bool = False) -> AxisCalibration:
-    """Extract linear ``(mu, chi, d)`` calibration from a NeXus/HDF5 file if present.
+    """Extract linear ``(mu, chi, d)`` calibration from a NeXus/HDF5 file or OME-Zarr store if present.
 
     Probes:
-    1. Explicit ``/entry*/calibration`` groups.
-    2. NeXus ``NXdata`` ``@axes`` attributes on the primary 3D dataset's parent group (e.g. ``darfix``).
-    3. 1D coordinate arrays under ``NXentry``, ``data``, ``measurement``, or ESRF BLISS
+    1. ``basecoat`` OME-Zarr v0.4 stores (``.ome.zarr`` / ``.zarr``).
+    2. Explicit ``/entry*/calibration`` groups.
+    3. NeXus ``NXdata`` ``@axes`` attributes on the primary 3D dataset's parent group (e.g. ``darfix``).
+    4. 1D coordinate arrays under ``NXentry``, ``data``, ``measurement``, or ESRF BLISS
        ``instrument/positioners/{mu, chi, obpitch, twotheta, d}``.
     """
     import numpy as np
 
-    h5py = _require_h5py()
     path = Path(path)
+    if path.name.lower().endswith((".ome.zarr", ".zarr")):
+        import basecoat
+
+        with basecoat.open_volume(path) as bc_lazy:
+            return AxisCalibration.from_basecoat_axes(bc_lazy.axes, provenance=bc_lazy.provenance)
+
+    h5py = _require_h5py()
 
     with _open_h5_readonly(h5py, path, swmr=swmr) as handle:
         vol_parent: str | None = None
@@ -328,10 +335,18 @@ def load_primary_volume(
     auto_discover: bool = True,
     swmr: bool = False,
 ) -> np.ndarray:
-    """Load a primary 3D detector volume from NeXus paths or largest-3D auto-discovery."""
+    """Load a primary 3D detector volume from NeXus HDF5 or ``basecoat``-supported stores."""
     import numpy as np
 
+    p = Path(path)
+    if p.name.lower().endswith((".ome.zarr", ".zarr", ".tif", ".tiff", ".npy", ".raw")):
+        import basecoat
+
+        loaded = basecoat.read_volume(p)
+        vol = loaded.image if isinstance(loaded, basecoat.VolumeSet) else loaded
+        return np.asarray(vol.data, dtype=np.float64)
+
     h5py = _require_h5py()
-    with _open_h5_readonly(h5py, path, swmr=swmr) as handle:
+    with _open_h5_readonly(h5py, p, swmr=swmr) as handle:
         ds_path = _resolve_volume_dataset(handle, h5py, candidates=candidates, auto_discover=auto_discover)
         return np.asarray(handle[ds_path][()], dtype=np.float64)

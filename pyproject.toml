@@ -4,16 +4,16 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "braggtrack"
-version = "0.5.0"
-description = "4D grain kinematics, lineage, and fracture precursor tracking for operando X-ray diffraction."
+version = "0.5.1"
+description = "4D Bragg reflection tracking, kinematics, and lineage for operando X-ray diffraction."
 readme = "README.md"
 requires-python = ">=3.10"
-license = { text = "MIT" }
+license = { file = "LICENSE" }
 authors = [{ name = "James Le Houx", email = "j.lehoux@greenwich.ac.uk" }]
 classifiers = [
   "Development Status :: 4 - Beta",
   "Intended Audience :: Science/Research",
-  "License :: OSI Approved :: MIT License",
+  "License :: OSI Approved :: BSD License",
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3.10",
   "Programming Language :: Python :: 3.11",
@@ -21,6 +21,7 @@ classifiers = [
   "Topic :: Scientific/Engineering :: Physics",
 ]
 dependencies = [
+  "basecoat @ git+https://github.com/BASE-Laboratory/basecoat.git@v0.2.0",
   "numpy>=1.26",
   "scipy>=1.12",
   "scikit-image>=0.22",
@@ -44,10 +45,12 @@ notebook = [
   "matplotlib>=3.8",
   "pandas>=2.1",
 ]
-dev = [
-  "braggtrack[torch,notebook]",
+test = [
   "pytest>=7.4",
   "pytest-cov>=4.1",
+]
+dev = [
+  "braggtrack[torch,notebook,test]",
   "ruff>=0.4",
 ]
 
@@ -101,3 +104,19 @@ known-first-party = ["braggtrack"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "--tb=short"
+
+[tool.basecoat.layers]
+layer = 2
+source_dirs = ["braggtrack"]
+banned_imports = [
+  "multimodal_benchmark",
+  "xct_research",
+  "openimpala",
+  "sms",
+  "openlsrx",
+  "x_fuse",
+  "porousdiff",
+  "porousdiff_workflows",
+  "zarr",
+  "numcodecs",
+]

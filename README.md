@@ -4,7 +4,7 @@
 
 [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/BASE-Laboratory/BraggTrack/blob/main/notebooks/braggtrack_demo.ipynb)
 
-4D crystallographic grain kinematics, multi-scan beam-dropout gap closing, grain lineage (`1 -> 2+` fracture splits & `2+ -> 1` coalescence merges), and persistent fracture precursor tracking for operando X-ray diffraction.
+4D Bragg reflection tracking, crystallographic grain kinematics, multi-scan beam-dropout gap closing, and split/merge lineage (`1 -> 2+` fracture splits & `2+ -> 1` coalescence merges) for operando X-ray diffraction.
 
 <p align="center">
   <img src="docs/figures/fracture_lineage_and_precursors.png" alt="BraggTrack 4D lineage, precursor decomposition, and ESRF-ID03 strain kinematics" width="94%" />
@@ -14,8 +14,8 @@
 
 - **Beamline-scale NeXus/HDF5 I/O, `darfix`/BLISS auto-calibration & operando sync (`braggtrack.io`)** — Auto-discovers 3D detector cubes across `darfix` `NXdata` (`@default` / `@signal` / `@axes`), ESRF-ID03 LIMA files (`/entry_0000/ESRF-ID03/pco_nf/data`), ESRF BLISS `instrument/positioners`, and arbitrary HDF5 trees (`auto_discover=True`). Streams `z`-slabs via `LazyVolume`, synchronizes external potentiostat / load-frame logs (`CSV`/`TSV` and Biologic EC-Lab `.mpt`, regularized $\mathrm{d}Q/\mathrm{d}V$, $\partial\varepsilon/\partial V$), maps transmission geometry `(2theta, eta, d, |Q|)` via `DetectorGeometry`, and exports directly to **`ImageD11` (`.flt`)** and **NeXus `NXprocess` HDF5 (`.nxs`)**.
 - **Pedestal-safe 3D Bragg reflection segmentation (`braggtrack.segmentation`)** — Read-noise-guarded chunked Otsu foreground masking (`detector_foreground_threshold`) with cross-scan rolling-median smoothing (`smooth_thresholds`), 3D LoG peak enhancement, robust `h`-maxima seeding, 3D watershed, nearby-basin merging, analytical Poisson + quantization centroid uncertainties (`centroid_*_err`), and physical or voxel-space covariance/eigenvalue extraction. Includes an experimental dense patch-feature + HDBSCAN slice-stitching segmenter (`--method dino`).
-- **4D grain kinematics, crowded-layer drift registration, optimal transport & precursors (`braggtrack.tracking`)** — Step-normalized 3D reciprocal-space `PositionShapeCost` or closed-form 3D Gaussian `WassersteinBuresCost` (`--cost-model wasserstein_bures`), collective rocking-slab 2D FFT phase-correlation + 6D constant-velocity Kalman drift compensation (`--drift-mode`), Jaqaman birth/death LAP association with runner-up `assignment_margin`, multi-scan gap closing (`--max-gap`), local strain ($\Delta d / d_0$), ancestor-referenced `lineage_strain` across splits, propagated $\sigma_\varepsilon$, causal angular/lattice velocities (`rate_mu`, `rate_chi`, `rate_d`, `strain_rate`), log-intensity-conserved `1 -> 2+` split / `2+ -> 1` merge / `reversible_overlap` DAG edges, and baseline-referenced multi-scan fracture precursor ranking (`--precursor-baseline-reference`).
-- **Optional multi-view morphological ViT descriptors (`braggtrack.semantic`)** — Opt-in (`--cost-beta > 0`) orthogonal $(\mu, \chi, d)$ maximum-intensity projections (MIPs) encoded in batched forward passes (`embed_batch`, `extract_patch_features_batch`) with ungated **`facebook/dinov2-small`**, drop-in **DINOv3** support, or a deterministic offline `mock` backend for ablation studies.
+- **4D grain kinematics, crowded-layer drift registration, optimal transport & precursors (`braggtrack.tracking`)** — Step-normalized 3D reciprocal-space `PositionShapeCost` or closed-form 3D Gaussian `WassersteinBuresCost` (`--cost-model wasserstein_bures`), collective rocking-slab 2D FFT phase-correlation + 6D constant-velocity Kalman drift compensation (`--drift-mode`), Jaqaman birth/death LAP association with runner-up `assignment_margin`, multi-scan gap closing (`--max-gap`), local strain ($\Delta d / d_0$), ancestor-referenced `lineage_strain` across splits, propagated $\sigma_\varepsilon$, causal angular/lattice velocities (`rate_mu`, `rate_chi`, `rate_d`, `strain_rate`), `cKDTree`-indexed log-intensity-conserved `1 -> 2+` split / `2+ -> 1` merge / `reversible_overlap` DAG edges, and baseline-referenced multi-scan fracture precursor ranking (`--precursor-baseline-reference`).
+- **Optional multi-view morphological ViT descriptors (`braggtrack.semantic`)** — Opt-in (`--cost-beta > 0`) orthogonal $(\mu, \chi, d)$ maximum-intensity projections (MIPs) encoded in batched forward passes (`embed_batch`, `extract_patch_features_batch`) with revision-pinned ungated **`facebook/dinov2-small`**, drop-in **DINOv3** support, or a deterministic offline `mock` backend for ablation studies.
 - **Online causal streaming, state-space `GP(Q, V)` & autonomous DFXM "Scout-and-Zoom" (`braggtrack.autonomous`, `braggtrack-watch`)** — Strictly causal trailing-window streaming tracker (`CausalStreamingTracker`) with $O(1)$-volume-RAM cached ROI precursors, wall-clock `GP(t)` or electrochemical state-space `GP(Q, V)` (`--forecast-domain state_space`) diffractometer setpoint forecasting during rapid phase transitions (e.g., Ni92 `H2 -> H3` collapse), `bliss_dfxm_zoom.v1` JSONL trigger emission (`zoom_triggers.jsonl`), and `O(1)`-RAM multi-hundred-scan archive evaluation (`braggtrack-eval-archive`).
 - **Publication figures, operando $\mathrm{d}Q/\mathrm{d}V$ dashboards & offline HTML 4D Explorer (`braggtrack.viz`, `braggtrack-report`)** — Generates Okabe–Ito styled lineage DAGs, strain/misorientation dashboards, 3-panel operando electrochemistry + fracture synchronization plots, precursor heatmaps, 3-view MIP cards, and a single-file interactive `report.html` that opens offline on air-gapped beamline networks.
 - **One-command reproducible pipeline (`braggtrack-run`)** — Runs validation, operando stimulus sync, segmentation, classical 4D tracking (plus optional `--cost-beta > 0` embedding), kinematics, fracture event analysis, HTML reporting, and `ImageD11`/NeXus export end-to-end, emitting SHA-256 input checksums, stage timings, and `run_manifest.json`.
@@ -29,8 +29,15 @@
 ## Installation
 
 ```bash
+# Install directly from GitHub
+pip install "git+https://github.com/BASE-Laboratory/BraggTrack.git"
+
+# Or clone locally for editable installation:
 # Core package (numpy, scipy, scikit-image, scikit-learn, networkx, h5py)
 pip install -e .
+
+# Core + test runner (pytest, pytest-cov; matplotlib plots auto-skip without [notebook])
+pip install -e ".[test]"
 
 # With PyTorch + HuggingFace Transformers for real DINOv2 / DINOv3 backbones
 pip install -e ".[torch]"
@@ -38,7 +45,7 @@ pip install -e ".[torch]"
 # With Jupyter, Matplotlib, and Pandas for interactive notebooks & static figures
 pip install -e ".[notebook]"
 
-# Full developer environment (torch + notebook + pytest + ruff)
+# Full developer environment (torch + notebook + test + ruff)
 pip install -e ".[dev]"
 ```
 

@@ -254,3 +254,85 @@ def export_nexus_process(
                 pass
 
     return dest
+
+
+def export_ome_zarr_volume(
+    volume: np.ndarray,
+    out_store: str | Path,
+    *,
+    spot_labels: np.ndarray | None = None,
+    label_names: dict[int, str] | None = None,
+    calibration: AxisCalibration | None = None,
+    multiscale_levels: int = 2,
+    chunks: tuple[int, int, int] = (64, 64, 64),
+    overwrite: bool = True,
+) -> Path:
+    """Export a 3D detector/reciprocal-space cube and optional Bragg spot labels to OME-Zarr v0.4 via ``basecoat``."""
+    import basecoat
+
+    arr = np.asarray(volume, dtype=np.float32)
+    if arr.ndim != 3:
+        raise ValueError(f"export_ome_zarr_volume requires a 3D volume, got shape={arr.shape}")
+
+    cal = calibration or AxisCalibration()
+    use_spatial_grid = spot_labels is not None and cal.mu_step > 0.0 and cal.d_step > 0.0 and cal.chi_step > 0.0
+    axes = cal.to_basecoat_axes(spatial_grid=use_spatial_grid)
+    prov = {
+        "producer": "braggtrack",
+        "braggtrack_version": str(braggtrack.__version__),
+        "braggtrack_calibration": cal.to_dict(),
+    }
+    img_vol = basecoat.Volume(arr, axes, provenance=prov)
+
+    if spot_labels is None:
+        return basecoat.write_ome_zarr(
+            img_vol,
+            out_store,
+            multiscale_levels=int(multiscale_levels),
+            chunks=chunks,
+            overwrite=overwrite,
+        )
+
+    lbl_arr = np.asarray(spot_labels)
+    if lbl_arr.shape != arr.shape:
+        raise ValueError(f"spot_labels shape {lbl_arr.shape} must match volume shape {arr.shape}")
+    if not np.issubdtype(lbl_arr.dtype, np.integer):
+        lbl_arr = lbl_arr.astype(np.int32)
+
+    if not use_spatial_grid:
+        # Negative rocking-scan steps cannot enter VolumeSet spatial pyramids; normalize positive grid scales and preserve exact signed steps in provenance.
+        spatial_axes = (
+            basecoat.AxisSpec(
+                name="mu",
+                kind="space",
+                unit="deg" if cal.calibrated else "voxel",
+                scale=abs(cal.mu_step),
+                offset=cal.mu_origin,
+            ),
+            basecoat.AxisSpec(
+                name="d",
+                kind="space",
+                unit="angstrom" if cal.calibrated else "voxel",
+                scale=abs(cal.d_step),
+                offset=cal.d_origin,
+            ),
+            basecoat.AxisSpec(
+                name="chi",
+                kind="space",
+                unit="deg" if cal.calibrated else "voxel",
+                scale=abs(cal.chi_step),
+                offset=cal.chi_origin,
+            ),
+        )
+        img_vol = basecoat.Volume(arr, spatial_axes, provenance=prov)
+        axes = spatial_axes
+
+    lbl_vol = basecoat.Volume(lbl_arr, axes, label_names=label_names, provenance=prov)
+    vset = basecoat.VolumeSet(img_vol, labels={"spots": lbl_vol})
+    return basecoat.write_ome_zarr(
+        vset,
+        out_store,
+        multiscale_levels=int(multiscale_levels),
+        chunks=chunks,
+        overwrite=overwrite,
+    )

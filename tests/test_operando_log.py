@@ -5,10 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-import matplotlib
-
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
+import pytest
 
 from braggtrack.cli._utils import write_csv
 from braggtrack.io import (
@@ -107,6 +104,17 @@ def test_csv_operando_annotation_plot_and_html_report(tmp_path: Path) -> None:
     enriched = annotate_tracks_with_stimulus(rows, pts)
     assert any(r["d_strain_d_v"] != "" for r in enriched)
 
+    art_dir = tmp_path / "art"
+    write_csv(art_dir / "tracking" / "tracks.csv", enriched)
+    html_out = generate_html_report(art_dir, art_dir / "report.html", operando_log=csv_log)
+    html_txt = html_out.read_text(encoding="utf-8")
+    assert "Operando Potential E (V)" in html_txt
+    assert "4.22" in html_txt
+
+    matplotlib = pytest.importorskip("matplotlib")
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
     fig_path = tmp_path / "operando_fig.png"
     fig, _ = plot_operando_strain_and_events(
         enriched,
@@ -118,10 +126,3 @@ def test_csv_operando_annotation_plot_and_html_report(tmp_path: Path) -> None:
     )
     plt.close(fig)
     assert fig_path.exists() and fig_path.stat().st_size > 1000
-
-    art_dir = tmp_path / "art"
-    write_csv(art_dir / "tracking" / "tracks.csv", enriched)
-    html_out = generate_html_report(art_dir, art_dir / "report.html", operando_log=csv_log)
-    html_txt = html_out.read_text(encoding="utf-8")
-    assert "Operando Potential E (V)" in html_txt
-    assert "4.22" in html_txt

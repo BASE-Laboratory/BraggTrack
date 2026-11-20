@@ -150,6 +150,7 @@ def _cluster_feature_map(
     clusterer = HDBSCAN(
         min_cluster_size=effective_min_cluster,
         min_samples=max(1, min(min_samples, effective_min_cluster - 1)),
+        copy=True,
     )
     raw_labels = clusterer.fit_predict(reduced)
     cluster_labels = np.where(raw_labels >= 0, raw_labels + 1, 0)

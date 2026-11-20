@@ -8,11 +8,8 @@ import unittest
 from pathlib import Path
 
 import h5py
-import matplotlib
-
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
 import numpy as np
+import pytest
 
 from braggtrack.cli import report_dataset, run_pipeline
 from braggtrack.tracking import (
@@ -35,7 +32,13 @@ from braggtrack.viz import (
 
 
 class VizAndReportTests(unittest.TestCase):
+    def setUp(self) -> None:
+        matplotlib = pytest.importorskip("matplotlib")
+        matplotlib.use("Agg")
+
     def test_all_matplotlib_plots_render_and_save(self) -> None:
+        import matplotlib.pyplot as plt
+
         volumes, label_volumes, scan_tables, _ = generate_fracture_scenario()
         G = build_tracks(scan_tables, split_merge_config=SplitMergeConfig(max_distance=20.0))
         track_rows = tracks_to_table(G)
