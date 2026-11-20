@@ -65,6 +65,50 @@ class AxisCalibration:
             calibrated=calibrated,
         )
 
+    def to_basecoat_axes(self, *, spatial_grid: bool = False) -> tuple[Any, Any, Any]:
+        """Convert ``(z=mu, y=d, x=chi)`` calibration to a 3-tuple of ``basecoat.AxisSpec``."""
+        from basecoat import AxisSpec as BasecoatAxisSpec
+
+        if not self.calibrated:
+            kind = "space" if (spatial_grid and self.mu_step > 0 and self.d_step > 0 and self.chi_step > 0) else "index"
+            return (
+                BasecoatAxisSpec(name="mu", kind=kind, unit="voxel", scale=self.mu_step, offset=self.mu_origin),
+                BasecoatAxisSpec(name="d", kind=kind, unit="voxel", scale=self.d_step, offset=self.d_origin),
+                BasecoatAxisSpec(name="chi", kind=kind, unit="voxel", scale=self.chi_step, offset=self.chi_origin),
+            )
+        if spatial_grid and self.mu_step > 0.0 and self.d_step > 0.0 and self.chi_step > 0.0:
+            return (
+                BasecoatAxisSpec(name="mu", kind="space", unit="deg", scale=self.mu_step, offset=self.mu_origin),
+                BasecoatAxisSpec(name="d", kind="space", unit="angstrom", scale=self.d_step, offset=self.d_origin),
+                BasecoatAxisSpec(name="chi", kind="space", unit="deg", scale=self.chi_step, offset=self.chi_origin),
+            )
+        return (
+            BasecoatAxisSpec(name="mu", kind="angle", unit="deg", scale=self.mu_step, offset=self.mu_origin),
+            BasecoatAxisSpec(name="d", kind="spectral", unit="angstrom", scale=self.d_step, offset=self.d_origin),
+            BasecoatAxisSpec(name="chi", kind="angle", unit="deg", scale=self.chi_step, offset=self.chi_origin),
+        )
+
+    @classmethod
+    def from_basecoat_axes(
+        cls, axes: tuple[Any, ...] | list[Any], *, provenance: dict[str, Any] | None = None
+    ) -> AxisCalibration:
+        """Recover :class:`AxisCalibration` from ``basecoat`` axes or stamped provenance."""
+        if provenance and isinstance(provenance.get("braggtrack_calibration"), dict):
+            return cls.from_dict(provenance["braggtrack_calibration"])
+        if len(axes) != 3:
+            raise ValueError(f"Expected 3 basecoat axes (mu, d, chi), got {len(axes)}")
+        ax_mu, ax_d, ax_chi = axes[0], axes[1], axes[2]
+        calibrated = any(getattr(ax, "unit", "voxel") != "voxel" for ax in (ax_mu, ax_d, ax_chi))
+        return cls(
+            mu_origin=float(ax_mu.offset),
+            mu_step=float(ax_mu.scale),
+            d_origin=float(ax_d.offset),
+            d_step=float(ax_d.scale),
+            chi_origin=float(ax_chi.offset),
+            chi_step=float(ax_chi.scale),
+            calibrated=calibrated,
+        )
+
 
 @dataclass(frozen=True)
 class ScanVolumeMeta:
