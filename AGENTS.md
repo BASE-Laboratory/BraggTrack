@@ -1,6 +1,6 @@
 # Agent & Contributor Guidelines (`BraggTrack`)
 
-Read [ECOSYSTEM.md](./ECOSYSTEM.md) before adding a module, dependency, file reader, or dataset constant. The master copy of `ECOSYSTEM.md` lives in `BASE-Laboratory/basecoat`.
+Read [ECOSYSTEM.md](https://github.com/BASE-Laboratory/basecoat/blob/main/ECOSYSTEM.md) before adding a module, dependency, file reader, or dataset constant. The master copy of `ECOSYSTEM.md` lives in `BASE-Laboratory/basecoat`.
 
 ## Ecosystem Layer
 
