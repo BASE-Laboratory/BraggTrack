@@ -53,6 +53,9 @@ jobs:
           python -m pip install -e ".[notebook]"
           python -m pip install pytest pytest-cov
 
+      - name: Check Layer 2 architectural import boundaries
+        run: python -m basecoat.layers
+
       - name: Run pre-PR diagnostics
         run: python scripts/pre_pr_check.py
 

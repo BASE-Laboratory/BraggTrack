@@ -9,16 +9,34 @@ from typing import Any
 import numpy as np
 from skimage.filters import threshold_otsu
 
+from .models import AxisCalibration
 from .nexus import _require_h5py, _resolve_volume_dataset
+
+_BASECOAT_VOLUME_SUFFIXES = (".ome.zarr", ".zarr", ".tif", ".tiff", ".npy", ".raw")
+
+
+class _BasecoatLazyDatasetAdapter:
+    """Sliceable adapter bridging ``basecoat.LazyVolume`` to :class:`LazyVolume`."""
+
+    def __init__(self, bc_lazy: Any) -> None:
+        self._bc = bc_lazy
+        self.shape = bc_lazy.shape
+        self.dtype = bc_lazy.dtype
+
+    def __getitem__(self, key: Any) -> np.ndarray:
+        if key is Ellipsis or key == ():
+            return np.asarray(self._bc.to_volume(max_bytes=4 * 1024**3).data)
+        return np.asarray(self._bc.read_region(key).data)
 
 
 class LazyVolume:
     """Lazy 3D volume wrapper supporting bounded ROI reads and z-slab streaming.
 
-    Works seamlessly over either an open ``h5py.Dataset`` or an in-memory
-    ``numpy.ndarray`` fallback so downstream stages (:func:`crop_spot_cube`,
-    chunked Otsu thresholding) never materialize full ``float64`` detector
-    cubes unless explicitly requested via ``vol[()]``.
+    Works seamlessly over an open ``h5py.Dataset``, a ``basecoat.LazyVolume``
+    (``.ome.zarr``, ``.tif``, ``.npy``), or an in-memory ``numpy.ndarray``
+    fallback so downstream stages (:func:`crop_spot_cube`, chunked Otsu
+    thresholding) never materialize full ``float64`` detector cubes unless
+    explicitly requested via ``vol[()]``.
     """
 
     def __init__(
@@ -43,6 +61,28 @@ class LazyVolume:
     def from_array(cls, array: np.ndarray, *, dataset_path: str | None = None) -> LazyVolume:
         arr = np.asarray(array)
         return cls(arr, handle=None, dataset_path=dataset_path)
+
+    @classmethod
+    def from_basecoat(cls, source: Any, *, dataset_path: str | None = None) -> LazyVolume:
+        """Wrap a ``basecoat.LazyVolume`` or ``basecoat.Volume`` without materializing out-of-core stores."""
+        import basecoat
+
+        if isinstance(source, basecoat.Volume):
+            return cls.from_array(np.asarray(source.data), dataset_path=dataset_path)
+        if isinstance(source, basecoat.LazyVolume):
+            return cls(_BasecoatLazyDatasetAdapter(source), handle=source, dataset_path=dataset_path)
+        raise TypeError(f"Expected basecoat.LazyVolume or basecoat.Volume, got {type(source).__name__}")
+
+    def to_basecoat_volume(self, calibration: AxisCalibration | None = None) -> Any:
+        """Materialize as a calibrated ``basecoat.Volume`` carrying ``(mu, d, chi)`` axes."""
+        import basecoat
+
+        cal = calibration or AxisCalibration()
+        return basecoat.Volume(
+            self.to_dense(),
+            cal.to_basecoat_axes(),
+            provenance={"producer": "braggtrack", "braggtrack_calibration": cal.to_dict()},
+        )
 
     @property
     def shape(self) -> tuple[int, int, int]:
@@ -98,11 +138,18 @@ def open_lazy_volume(
     auto_discover: bool = True,
     swmr: bool = False,
 ) -> LazyVolume:
-    """Open an HDF5 file and return a :class:`LazyVolume` bound to its primary 3D dataset."""
+    """Open an HDF5/NeXus or ``basecoat``-supported store (``.ome.zarr``, ``.tif``, ``.npy``) lazily."""
+    p = Path(path)
+    if p.name.lower().endswith(_BASECOAT_VOLUME_SUFFIXES):
+        import basecoat
+
+        bc_lazy = basecoat.open_volume(p)
+        return LazyVolume.from_basecoat(bc_lazy, dataset_path=str(p))
+
     from .nexus import _open_h5_readonly
 
     h5py = _require_h5py()
-    handle = _open_h5_readonly(h5py, path, swmr=swmr)
+    handle = _open_h5_readonly(h5py, p, swmr=swmr)
     try:
         ds_path = _resolve_volume_dataset(handle, h5py, candidates=candidates, auto_discover=auto_discover)
         ds = handle[ds_path]

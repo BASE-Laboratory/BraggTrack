@@ -4,7 +4,7 @@ title: "BraggTrack"
 type: software
 version: 0.5.1
 date-released: "2026-11-19"
-license: MIT
+license: BSD-3-Clause
 repository-code: "https://github.com/BASE-Laboratory/BraggTrack"
 url: "https://github.com/BASE-Laboratory/BraggTrack"
 abstract: >-

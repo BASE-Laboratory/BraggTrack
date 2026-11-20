@@ -310,18 +310,23 @@ class TestEventsAndPrecursors(unittest.TestCase):
 
     def test_dino_default_revision_is_pinned(self) -> None:
         """Default facebook/dinov2-small loads with an explicit HuggingFace commit revision."""
+        import types
         from unittest.mock import MagicMock, patch
 
         from braggtrack.semantic.dino import DEFAULT_DINO_MODEL, DEFAULT_DINO_REVISION, _load_hf_dino
 
         self.assertEqual(len(DEFAULT_DINO_REVISION), 40)
-        with (
-            patch("transformers.AutoImageProcessor.from_pretrained", return_value=MagicMock()) as mock_proc,
-            patch("transformers.AutoModel.from_pretrained", return_value=MagicMock()) as mock_mod,
-        ):
+        fake_tf = types.ModuleType("transformers")
+        fake_tf.AutoImageProcessor = MagicMock()  # type: ignore[attr-defined]
+        fake_tf.AutoModel = MagicMock()  # type: ignore[attr-defined]
+        with patch.dict("sys.modules", {"transformers": fake_tf}):
             _load_hf_dino(DEFAULT_DINO_MODEL)
-            mock_proc.assert_called_once_with(DEFAULT_DINO_MODEL, revision=DEFAULT_DINO_REVISION)
-            mock_mod.assert_called_once_with(DEFAULT_DINO_MODEL, revision=DEFAULT_DINO_REVISION)
+            fake_tf.AutoImageProcessor.from_pretrained.assert_called_once_with(
+                DEFAULT_DINO_MODEL, revision=DEFAULT_DINO_REVISION
+            )
+            fake_tf.AutoModel.from_pretrained.assert_called_once_with(
+                DEFAULT_DINO_MODEL, revision=DEFAULT_DINO_REVISION
+            )
 
     def test_events_ckdtree_scales_to_600_spots(self) -> None:
         """cKDTree spatial indexing keeps 600-spot 4-scan split/merge resolution well under 0.5 s."""
