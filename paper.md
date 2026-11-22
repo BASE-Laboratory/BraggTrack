@@ -126,6 +126,16 @@ for full multi-cycle *operando* campaigns.
 
 ![Synthetic 4D benchmark suite comparing Geometry-Only, Mock-Hash, and `facebook/dinov2-small` across crossing tilted reflections, flux/mosaic jitter, and beam-dropout recovery.\label{fig:benchmarks}](docs/figures/benchmark_comparison.png)
 
+# AI usage disclosure
+
+Generative AI coding assistants (including Anthropic's Claude and Google Gemini)
+were used to assist with software engineering tasks, including boilerplate test
+generation, CLI refactoring, and documentation formatting. The author reviewed,
+edited, and validated all AI-assisted outputs against analytical and synthetic
+tracking benchmarks, made all core architectural and scientific decisions, and
+assumes full responsibility for the accuracy, correctness, and originality of
+the codebase and manuscript.
+
 # Acknowledgements
 
 This work was supported by The Faraday Institution Emerging Leader Fellowship
