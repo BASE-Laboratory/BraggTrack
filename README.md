@@ -181,3 +181,5 @@ python scripts/pre_pr_check.py
 - **`artifacts/`** — Generated pipeline outputs (gitignored; never commit).
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for contribution guidelines and [paper.md](paper.md) for the manuscript overview.
+
+**Maintainer:** James Le Houx (`j.lehoux@greenwich.ac.uk`).

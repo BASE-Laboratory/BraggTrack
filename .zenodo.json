@@ -1,0 +1,23 @@
+{
+  "title": "BraggTrack: 4D Bragg Reflection Tracking, Kinematics, and Lineage for Operando X-ray Diffraction",
+  "upload_type": "software",
+  "license": "BSD-3-Clause",
+  "creators": [
+    {
+      "name": "Le Houx, James",
+      "affiliation": "BASE Laboratory, School of Engineering, University of Greenwich, United Kingdom",
+      "orcid": "0000-0002-1576-0673"
+    }
+  ],
+  "keywords": [
+    "X-ray diffraction",
+    "dark-field X-ray microscopy",
+    "operando crystallography",
+    "autonomous experiments",
+    "3D segmentation",
+    "object tracking",
+    "grain fracture",
+    "materials science",
+    "Python"
+  ]
+}
